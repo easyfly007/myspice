@@ -130,6 +130,23 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - 首先支持 PSF 文本格式
 - 逐步扩展: ngspice raw / PSF / FSDB
 
+## 当前进度
+
+已完成:
+
+- 项目 workspace 与基础 crate 架构
+- CLI 二进制框架与批量测试脚本
+- Netlist parser skeleton (行级解析 + 语句识别 + 节点/参数抽取 + 基础校验)
+- .include 读取、.param 基础替换、.subckt 基础展开
+- 基础测试用例与 spice-datasets 引用
+
+待完善:
+
+- 语义展开的完整规则 (参数作用域、子电路参数映射)
+- 设备级字段解析的完整规则 (受控源高级语法)
+- 求解器与实际仿真结果输出
+- API 服务实现与交互模式
+
 ## 当前目录结构
 
 当前已落地的 workspace 结构如下:
@@ -177,6 +194,8 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
   - tests/test_cli_smoke.py
 - tools/gui: PySide6 GUI (后续阶段)
   - README.md
+- docs: 项目文档
+  - myspice_user_manual.md
 
 ## 测试结构
 
@@ -185,7 +204,9 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - crates/sim-api/tests: API 层单元测试
 - crates/sim-cli/tests: CLI 单元测试
 - tests/fixtures/netlists: 网表 fixture 用例
+- tests/run_spice_datasets.py: 运行 spice-datasets 的批量 smoke 测试并输出 passrate
 - tools/ai-agent/tests: Python CLI/代理测试
+ - 外部数据集: `../spice-datasets` (测试用例引用)
 
 ## 里程碑计划
 
