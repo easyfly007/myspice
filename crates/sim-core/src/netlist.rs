@@ -863,8 +863,10 @@ enum ExprToken {
     Number(f64),
     Ident(String),
     Op(char),
+    Comma,
     LParen,
     RParen,
+    Func { name: String, argc: usize },
 }
 
 fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
@@ -894,6 +896,10 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
                 push_buf(&mut buf, &mut tokens);
                 tokens.push(ExprToken::Op(ch));
             }
+            ',' => {
+                push_buf(&mut buf, &mut tokens);
+                tokens.push(ExprToken::Comma);
+            }
             '(' => {
                 push_buf(&mut buf, &mut tokens);
                 tokens.push(ExprToken::LParen);
@@ -911,19 +917,22 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
 
 fn parse_number_with_suffix(token: &str) -> Option<f64> {
     let lower = token.to_ascii_lowercase();
-    let (value_part, suffix) = lower
-        .trim()
-        .split_at(lower.len().saturating_sub(1));
-    let (num_str, multiplier) = match suffix {
-        "f" => (value_part, 1e-15),
-        "p" => (value_part, 1e-12),
-        "n" => (value_part, 1e-9),
-        "u" => (value_part, 1e-6),
-        "m" => (value_part, 1e-3),
-        "k" => (value_part, 1e3),
-        "g" => (value_part, 1e9),
-        "t" => (value_part, 1e12),
-        _ => (lower.as_str(), 1.0),
+    let trimmed = lower.trim();
+    let (num_str, multiplier) = if trimmed.ends_with("meg") {
+        (&trimmed[..trimmed.len() - 3], 1e6)
+    } else {
+        let (value_part, suffix) = trimmed.split_at(trimmed.len().saturating_sub(1));
+        match suffix {
+            "f" => (value_part, 1e-15),
+            "p" => (value_part, 1e-12),
+            "n" => (value_part, 1e-9),
+            "u" => (value_part, 1e-6),
+            "m" => (value_part, 1e-3),
+            "k" => (value_part, 1e3),
+            "g" => (value_part, 1e9),
+            "t" => (value_part, 1e12),
+            _ => (trimmed, 1.0),
+        }
     };
 
     if let Ok(num) = num_str.parse::<f64>() {
@@ -936,10 +945,21 @@ fn parse_number_with_suffix(token: &str) -> Option<f64> {
 fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
     let mut output = Vec::new();
     let mut ops: Vec<ExprToken> = Vec::new();
+    let mut arg_stack: Vec<usize> = Vec::new();
+    let mut idx = 0;
 
-    for token in tokens {
+    while idx < tokens.len() {
+        let token = tokens[idx].clone();
+        let next = tokens.get(idx + 1);
         match token {
-            ExprToken::Number(_) | ExprToken::Ident(_) => output.push(token),
+            ExprToken::Number(_) => output.push(token),
+            ExprToken::Ident(name) => {
+                if matches!(next, Some(ExprToken::LParen)) {
+                    ops.push(ExprToken::Func { name, argc: 0 });
+                } else {
+                    output.push(ExprToken::Ident(name));
+                }
+            }
             ExprToken::Op(op) => {
                 while let Some(top) = ops.last() {
                     match top {
@@ -951,7 +971,23 @@ fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
                 }
                 ops.push(ExprToken::Op(op));
             }
-            ExprToken::LParen => ops.push(ExprToken::LParen),
+            ExprToken::Comma => {
+                while let Some(top) = ops.last() {
+                    if matches!(top, ExprToken::LParen) {
+                        break;
+                    }
+                    output.push(ops.pop().unwrap());
+                }
+                if let Some(top) = arg_stack.last_mut() {
+                    *top += 1;
+                }
+            }
+            ExprToken::LParen => {
+                if matches!(ops.last(), Some(ExprToken::Func { .. })) {
+                    arg_stack.push(0);
+                }
+                ops.push(ExprToken::LParen);
+            }
             ExprToken::RParen => {
                 while let Some(top) = ops.pop() {
                     if matches!(top, ExprToken::LParen) {
@@ -959,8 +995,19 @@ fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
                     }
                     output.push(top);
                 }
+                if let Some(ExprToken::Func { name, .. }) = ops.last() {
+                    let argc = arg_stack.pop().unwrap_or(0) + 1;
+                    let func = ExprToken::Func {
+                        name: name.clone(),
+                        argc,
+                    };
+                    ops.pop();
+                    output.push(func);
+                }
             }
+            ExprToken::Func { .. } => {}
         }
+        idx += 1;
     }
 
     while let Some(op) = ops.pop() {
@@ -1012,13 +1059,38 @@ fn eval_rpn(
                 };
                 stack.push(value);
             }
-            ExprToken::LParen | ExprToken::RParen => return None,
+            ExprToken::Func { name, argc } => {
+                let mut args = Vec::new();
+                for _ in 0..*argc {
+                    args.push(stack.pop()?);
+                }
+                args.reverse();
+                let value = eval_function(name, &args)?;
+                stack.push(value);
+            }
+            ExprToken::Comma | ExprToken::LParen | ExprToken::RParen => return None,
         }
     }
     if stack.len() == 1 {
         Some(stack[0])
     } else {
         None
+    }
+}
+
+fn eval_function(name: &str, args: &[f64]) -> Option<f64> {
+    match name.to_ascii_lowercase().as_str() {
+        "max" if args.len() == 2 => Some(args[0].max(args[1])),
+        "min" if args.len() == 2 => Some(args[0].min(args[1])),
+        "abs" if args.len() == 1 => Some(args[0].abs()),
+        "if" if args.len() == 3 => {
+            if args[0] != 0.0 {
+                Some(args[1])
+            } else {
+                Some(args[2])
+            }
+        }
+        _ => None,
     }
 }
 

@@ -144,6 +144,24 @@ fn netlist_controlled_source_poly_is_accepted() {
 }
 
 #[test]
+fn netlist_param_expression_functions() {
+    let input = ".param RVAL=max(1k,2k)\nR1 in out RVAL\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    assert_eq!(elab.instances.len(), 1);
+    assert_eq!(elab.instances[0].value.as_deref(), Some("2000"));
+}
+
+#[test]
+fn netlist_param_expression_if() {
+    let input = ".param RVAL=if(1,1k,2k)\nR1 in out RVAL\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    assert_eq!(elab.instances.len(), 1);
+    assert_eq!(elab.instances[0].value.as_deref(), Some("1000"));
+}
+
+#[test]
 fn netlist_elaboration_expands_nested_subckt() {
     let input = ".subckt leaf a b\nR1 a b 1k\n.ends\n.subckt mid in out\nX1 in out leaf\n.ends\nXtop n1 n2 mid\n.end\n";
     let ast = parse_netlist(input);
