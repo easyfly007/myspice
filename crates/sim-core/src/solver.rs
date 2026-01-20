@@ -5,3 +5,7 @@ impl DcSolver {
         Self
     }
 }
+
+pub fn debug_dump_solver() {
+    println!("solver: dc solver stub");
+}

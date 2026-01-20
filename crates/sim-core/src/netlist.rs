@@ -34,6 +34,7 @@ pub struct DeviceStmt {
     pub control: Option<String>,
     pub value: Option<String>,
     pub params: Vec<Param>,
+    pub extras: Vec<String>,
     pub raw: String,
     pub line: usize,
 }
@@ -94,6 +95,7 @@ pub struct ElaboratedNetlist {
 pub struct SubcktDef {
     pub name: String,
     pub ports: Vec<String>,
+    pub params: Vec<Param>,
     pub body: Vec<Stmt>,
     pub line: usize,
 }
@@ -258,9 +260,19 @@ fn parse_statement(
 
     let tokens: Vec<&str> = iter.collect();
     let (args, params) = split_args_params(&tokens);
-    let (nodes, model, value) = split_device_fields(&kind, &args);
+    let (nodes, model, value, extras) = split_device_fields(&kind, &args);
     let control = extract_control_name(&kind, &args);
-    validate_device_fields(first, &kind, &nodes, &model, &control, &value, line_no, errors);
+    validate_device_fields(
+        first,
+        &kind,
+        &nodes,
+        &model,
+        &control,
+        &value,
+        &extras,
+        line_no,
+        errors,
+    );
 
     statements.push(Stmt::Device(DeviceStmt {
         name: first.to_string(),
@@ -270,6 +282,7 @@ fn parse_statement(
         control,
         value,
         params,
+        extras,
         raw: line.to_string(),
         line: line_no,
     }));
@@ -296,20 +309,24 @@ fn split_args_params(tokens: &[&str]) -> (Vec<String>, Vec<Param>) {
 fn split_device_fields(
     kind: &DeviceKind,
     args: &[String],
-) -> (Vec<String>, Option<String>, Option<String>) {
+) -> (Vec<String>, Option<String>, Option<String>, Vec<String>) {
     if args.is_empty() {
-        return (Vec::new(), None, None);
+        return (Vec::new(), None, None, Vec::new());
     }
 
     let mut nodes = Vec::new();
     let mut model = None;
     let mut value = None;
+    let mut extras = Vec::new();
 
     match kind {
         DeviceKind::R | DeviceKind::C | DeviceKind::L | DeviceKind::V | DeviceKind::I => {
             if args.len() >= 3 {
                 nodes.extend_from_slice(&args[0..2]);
                 value = Some(args[2].clone());
+                if args.len() > 3 {
+                    extras.extend_from_slice(&args[3..]);
+                }
             } else {
                 nodes.extend_from_slice(args);
             }
@@ -318,6 +335,9 @@ fn split_device_fields(
             if args.len() >= 3 {
                 nodes.extend_from_slice(&args[0..2]);
                 model = Some(args[2].clone());
+                if args.len() > 3 {
+                    extras.extend_from_slice(&args[3..]);
+                }
             } else {
                 nodes.extend_from_slice(args);
             }
@@ -326,6 +346,9 @@ fn split_device_fields(
             if args.len() >= 5 {
                 nodes.extend_from_slice(&args[0..4]);
                 model = Some(args[4].clone());
+                if args.len() > 5 {
+                    extras.extend_from_slice(&args[5..]);
+                }
             } else {
                 nodes.extend_from_slice(args);
             }
@@ -334,6 +357,9 @@ fn split_device_fields(
             if args.len() >= 5 {
                 nodes.extend_from_slice(&args[0..4]);
                 value = Some(args[4].clone());
+                if args.len() > 5 {
+                    extras.extend_from_slice(&args[5..]);
+                }
             } else {
                 nodes.extend_from_slice(args);
             }
@@ -342,6 +368,9 @@ fn split_device_fields(
             if args.len() >= 4 {
                 nodes.extend_from_slice(&args[0..2]);
                 value = Some(args[3].clone());
+                if args.len() > 4 {
+                    extras.extend_from_slice(&args[4..]);
+                }
             } else {
                 nodes.extend_from_slice(args);
             }
@@ -359,7 +388,7 @@ fn split_device_fields(
         }
     }
 
-    (nodes, model, value)
+    (nodes, model, value, extras)
 }
 
 fn map_control_kind(command: &str) -> ControlKind {
@@ -384,6 +413,7 @@ fn validate_device_fields(
     model: &Option<String>,
     control: &Option<String>,
     value: &Option<String>,
+    extras: &[String],
     line_no: usize,
     errors: &mut Vec<ParseError>,
 ) {
@@ -453,7 +483,7 @@ fn validate_device_fields(
                     message: format!("{} 需要 4 个节点", name),
                 });
             }
-            if value.is_none() {
+            if value.is_none() && !has_poly_syntax(extras) {
                 errors.push(ParseError {
                     line: line_no,
                     message: format!("{} 缺少增益值", name),
@@ -504,6 +534,7 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
     errors.extend(subckt_errors);
 
     let param_table = build_param_table(&top_level);
+    let subckt_map = build_subckt_map(&subckts);
     let mut instances = Vec::new();
     let mut control_count = 0;
 
@@ -512,12 +543,18 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
             Stmt::Device(device) => {
                 if matches!(device.kind, DeviceKind::X) {
                     if let Some(subckt_name) = device.model.as_deref() {
-                        if let Some(def) = subckts.iter().find(|d| d.name == subckt_name) {
-                            let expanded = expand_subckt_instance(&device, def, &mut errors);
-                            for mut inst in expanded {
-                                apply_params_to_device(&param_table, &mut inst);
-                                instances.push(inst);
-                            }
+                        if let Some(def) = subckt_map.get(subckt_name) {
+                            let local_params =
+                                build_local_param_table(def, &device, &std::collections::HashMap::new(), &param_table);
+                            let expanded = expand_subckt_instance_recursive(
+                                &device,
+                                def,
+                                &subckt_map,
+                                &local_params,
+                                &param_table,
+                                &mut errors,
+                            );
+                            instances.extend(expanded);
                             continue;
                         }
                     }
@@ -526,11 +563,11 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
                         message: format!("子电路未定义: {:?}", device.model),
                     });
                     let mut fallback = device.clone();
-                    apply_params_to_device(&param_table, &mut fallback);
+                    apply_params_to_device_scoped(&param_table, &std::collections::HashMap::new(), &mut fallback);
                     instances.push(fallback);
                 } else {
                     let mut inst = device.clone();
-                    apply_params_to_device(&param_table, &mut inst);
+                    apply_params_to_device_scoped(&param_table, &std::collections::HashMap::new(), &mut inst);
                     instances.push(inst);
                 }
             }
@@ -606,7 +643,11 @@ fn build_param_table(statements: &[Stmt]) -> std::collections::HashMap<String, S
         if let Stmt::Control(ctrl) = stmt {
             if matches!(ctrl.kind, ControlKind::Param) {
                 for param in &ctrl.params {
-                    params.insert(param.key.to_ascii_lowercase(), param.value.clone());
+                    let key = param.key.to_ascii_lowercase();
+                    let value = eval_expression(&params, &param.value)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| param.value.clone());
+                    params.insert(key, value);
                 }
             }
         }
@@ -614,29 +655,63 @@ fn build_param_table(statements: &[Stmt]) -> std::collections::HashMap<String, S
     params
 }
 
-fn apply_params_to_device(params: &std::collections::HashMap<String, String>, device: &mut DeviceStmt) {
+fn build_local_param_table(
+    def: &SubcktDef,
+    instance: &DeviceStmt,
+    parent: &std::collections::HashMap<String, String>,
+    global: &std::collections::HashMap<String, String>,
+) -> std::collections::HashMap<String, String> {
+    let mut params = std::collections::HashMap::new();
+    for param in &def.params {
+        let key = param.key.to_ascii_lowercase();
+        let value = eval_expression_scoped(&params, parent, global, &param.value)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| param.value.clone());
+        params.insert(key, value);
+    }
+    for param in &instance.params {
+        let key = param.key.to_ascii_lowercase();
+        let value = eval_expression_scoped(&params, parent, global, &param.value)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| param.value.clone());
+        params.insert(key, value);
+    }
+    params
+}
+
+fn apply_params_to_device_scoped(
+    global: &std::collections::HashMap<String, String>,
+    local: &std::collections::HashMap<String, String>,
+    device: &mut DeviceStmt,
+) {
     if let Some(value) = device.value.clone() {
-        if let Some(replaced) = resolve_param(params, &value) {
+        if let Some(replaced) = resolve_param_scoped(local, global, &value) {
             device.value = Some(replaced);
         }
     }
     if let Some(model) = device.model.clone() {
-        if let Some(replaced) = resolve_param(params, &model) {
+        if let Some(replaced) = resolve_param_scoped(local, global, &model) {
             device.model = Some(replaced);
         }
     }
     for param in &mut device.params {
-        if let Some(replaced) = resolve_param(params, &param.value) {
+        if let Some(replaced) = resolve_param_scoped(local, global, &param.value) {
             param.value = replaced;
         }
     }
 }
 
-fn resolve_param(
-    params: &std::collections::HashMap<String, String>,
+fn resolve_param_scoped(
+    local: &std::collections::HashMap<String, String>,
+    global: &std::collections::HashMap<String, String>,
     token: &str,
 ) -> Option<String> {
-    params.get(&token.to_ascii_lowercase()).cloned()
+    let key = token.to_ascii_lowercase();
+    local
+        .get(&key)
+        .cloned()
+        .or_else(|| global.get(&key).cloned())
+        .or_else(|| eval_expression_scoped(local, &std::collections::HashMap::new(), global, token).map(|v| v.to_string()))
 }
 
 fn extract_subckts(statements: &[Stmt]) -> (Vec<Stmt>, Vec<SubcktDef>, Vec<ParseError>) {
@@ -650,6 +725,7 @@ fn extract_subckts(statements: &[Stmt]) -> (Vec<Stmt>, Vec<SubcktDef>, Vec<Parse
             Stmt::Control(ctrl) if matches!(ctrl.kind, ControlKind::Subckt) => {
                 let name = ctrl.subckt_name.clone().unwrap_or_else(|| "unknown".to_string());
                 let ports = ctrl.subckt_ports.clone();
+                let params = ctrl.params.clone();
                 let line = ctrl.line;
                 idx += 1;
                 let mut body = Vec::new();
@@ -679,6 +755,7 @@ fn extract_subckts(statements: &[Stmt]) -> (Vec<Stmt>, Vec<SubcktDef>, Vec<Parse
                 subckts.push(SubcktDef {
                     name,
                     ports,
+                    params,
                     body,
                     line,
                 });
@@ -754,4 +831,290 @@ fn extract_control_name(kind: &DeviceKind, args: &[String]) -> Option<String> {
         DeviceKind::F | DeviceKind::H => args.get(2).cloned(),
         _ => None,
     }
+}
+
+fn has_poly_syntax(tokens: &[String]) -> bool {
+    tokens.iter().any(|token| token.to_ascii_uppercase().starts_with("POLY"))
+}
+
+fn eval_expression(
+    params: &std::collections::HashMap<String, String>,
+    expr: &str,
+) -> Option<f64> {
+    eval_expression_scoped(params, params, params, expr)
+}
+
+fn eval_expression_scoped(
+    local: &std::collections::HashMap<String, String>,
+    parent: &std::collections::HashMap<String, String>,
+    global: &std::collections::HashMap<String, String>,
+    expr: &str,
+) -> Option<f64> {
+    let tokens = tokenize_expr(expr);
+    if tokens.is_empty() {
+        return None;
+    }
+    let rpn = to_rpn(tokens)?;
+    eval_rpn(&rpn, local, parent, global)
+}
+
+#[derive(Debug, Clone)]
+enum ExprToken {
+    Number(f64),
+    Ident(String),
+    Op(char),
+    LParen,
+    RParen,
+}
+
+fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
+    let mut tokens = Vec::new();
+    let mut buf = String::new();
+
+    let push_buf = |buf: &mut String, tokens: &mut Vec<ExprToken>| {
+        if buf.is_empty() {
+            return;
+        }
+        if let Some(num) = parse_number_with_suffix(buf) {
+            tokens.push(ExprToken::Number(num));
+        } else {
+            tokens.push(ExprToken::Ident(buf.to_string()));
+        }
+        buf.clear();
+    };
+
+    let mut chars = expr.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch.is_whitespace() {
+            push_buf(&mut buf, &mut tokens);
+            continue;
+        }
+        match ch {
+            '+' | '-' | '*' | '/' => {
+                push_buf(&mut buf, &mut tokens);
+                tokens.push(ExprToken::Op(ch));
+            }
+            '(' => {
+                push_buf(&mut buf, &mut tokens);
+                tokens.push(ExprToken::LParen);
+            }
+            ')' => {
+                push_buf(&mut buf, &mut tokens);
+                tokens.push(ExprToken::RParen);
+            }
+            _ => buf.push(ch),
+        }
+    }
+    push_buf(&mut buf, &mut tokens);
+    tokens
+}
+
+fn parse_number_with_suffix(token: &str) -> Option<f64> {
+    let lower = token.to_ascii_lowercase();
+    let (value_part, suffix) = lower
+        .trim()
+        .split_at(lower.len().saturating_sub(1));
+    let (num_str, multiplier) = match suffix {
+        "f" => (value_part, 1e-15),
+        "p" => (value_part, 1e-12),
+        "n" => (value_part, 1e-9),
+        "u" => (value_part, 1e-6),
+        "m" => (value_part, 1e-3),
+        "k" => (value_part, 1e3),
+        "g" => (value_part, 1e9),
+        "t" => (value_part, 1e12),
+        _ => (lower.as_str(), 1.0),
+    };
+
+    if let Ok(num) = num_str.parse::<f64>() {
+        Some(num * multiplier)
+    } else {
+        None
+    }
+}
+
+fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
+    let mut output = Vec::new();
+    let mut ops: Vec<ExprToken> = Vec::new();
+
+    for token in tokens {
+        match token {
+            ExprToken::Number(_) | ExprToken::Ident(_) => output.push(token),
+            ExprToken::Op(op) => {
+                while let Some(top) = ops.last() {
+                    match top {
+                        ExprToken::Op(top_op) if precedence(*top_op) >= precedence(op) => {
+                            output.push(ops.pop().unwrap());
+                        }
+                        _ => break,
+                    }
+                }
+                ops.push(ExprToken::Op(op));
+            }
+            ExprToken::LParen => ops.push(ExprToken::LParen),
+            ExprToken::RParen => {
+                while let Some(top) = ops.pop() {
+                    if matches!(top, ExprToken::LParen) {
+                        break;
+                    }
+                    output.push(top);
+                }
+            }
+        }
+    }
+
+    while let Some(op) = ops.pop() {
+        if matches!(op, ExprToken::LParen | ExprToken::RParen) {
+            return None;
+        }
+        output.push(op);
+    }
+
+    Some(output)
+}
+
+fn precedence(op: char) -> u8 {
+    match op {
+        '+' | '-' => 1,
+        '*' | '/' => 2,
+        _ => 0,
+    }
+}
+
+fn eval_rpn(
+    rpn: &[ExprToken],
+    local: &std::collections::HashMap<String, String>,
+    parent: &std::collections::HashMap<String, String>,
+    global: &std::collections::HashMap<String, String>,
+) -> Option<f64> {
+    let mut stack: Vec<f64> = Vec::new();
+    for token in rpn {
+        match token {
+            ExprToken::Number(num) => stack.push(*num),
+            ExprToken::Ident(name) => {
+                let key = name.to_ascii_lowercase();
+                let value = local
+                    .get(&key)
+                    .or_else(|| parent.get(&key))
+                    .or_else(|| global.get(&key))
+                    .and_then(|val| parse_number_with_suffix(val).or_else(|| val.parse().ok()))?;
+                stack.push(value);
+            }
+            ExprToken::Op(op) => {
+                let b = stack.pop()?;
+                let a = stack.pop()?;
+                let value = match op {
+                    '+' => a + b,
+                    '-' => a - b,
+                    '*' => a * b,
+                    '/' => a / b,
+                    _ => return None,
+                };
+                stack.push(value);
+            }
+            ExprToken::LParen | ExprToken::RParen => return None,
+        }
+    }
+    if stack.len() == 1 {
+        Some(stack[0])
+    } else {
+        None
+    }
+}
+
+pub fn debug_dump_ast(ast: &NetlistAst) {
+    println!(
+        "netlist ast: title={:?} statements={} errors={}",
+        ast.title,
+        ast.statements.len(),
+        ast.errors.len()
+    );
+}
+
+pub fn debug_dump_elaborated(elab: &ElaboratedNetlist) {
+    println!(
+        "netlist elab: instances={} controls={} errors={}",
+        elab.instances.len(),
+        elab.control_count,
+        elab.error_count
+    );
+}
+
+fn build_subckt_map(subckts: &[SubcktDef]) -> std::collections::HashMap<String, SubcktDef> {
+    let mut map = std::collections::HashMap::new();
+    for def in subckts {
+        map.insert(def.name.clone(), def.clone());
+    }
+    map
+}
+
+fn expand_subckt_instance_recursive(
+    instance: &DeviceStmt,
+    def: &SubcktDef,
+    subckts: &std::collections::HashMap<String, SubcktDef>,
+    local_params: &std::collections::HashMap<String, String>,
+    global_params: &std::collections::HashMap<String, String>,
+    errors: &mut Vec<ParseError>,
+) -> Vec<DeviceStmt> {
+    let (body, nested_subckts, nested_errors) = extract_subckts(&def.body);
+    errors.extend(nested_errors);
+    let mut nested_map = build_subckt_map(&nested_subckts);
+    for (name, def) in subckts {
+        nested_map.entry(name.clone()).or_insert_with(|| def.clone());
+    }
+
+    let mut expanded = Vec::new();
+    for stmt in body {
+        match stmt {
+            Stmt::Device(dev) => {
+                let mut scoped = dev.clone();
+                scoped.name = format!("{}.{}", instance.name, dev.name);
+                scoped.nodes = dev
+                    .nodes
+                    .iter()
+                    .map(|node| map_subckt_node(instance, local_params, node))
+                    .collect();
+                if matches!(scoped.kind, DeviceKind::X) {
+                    if let Some(subckt_name) = scoped.model.as_deref() {
+                        if let Some(child_def) = nested_map.get(subckt_name) {
+                            let child_params =
+                                build_local_param_table(child_def, &scoped, local_params, global_params);
+                            let child_expanded = expand_subckt_instance_recursive(
+                                &scoped,
+                                child_def,
+                                &nested_map,
+                                &child_params,
+                                global_params,
+                                errors,
+                            );
+                            expanded.extend(child_expanded);
+                            continue;
+                        }
+                    }
+                    errors.push(ParseError {
+                        line: scoped.line,
+                        message: format!("子电路未定义: {:?}", scoped.model),
+                    });
+                }
+
+                let mut final_inst = scoped.clone();
+                apply_params_to_device_scoped(global_params, local_params, &mut final_inst);
+                expanded.push(final_inst);
+            }
+            _ => {}
+        }
+    }
+
+    expanded
+}
+
+fn map_subckt_node(
+    instance: &DeviceStmt,
+    local_params: &std::collections::HashMap<String, String>,
+    node: &str,
+) -> String {
+    if let Some(mapped) = local_params.get(&node.to_ascii_lowercase()) {
+        return mapped.clone();
+    }
+    format!("{}:{}", instance.name, node)
 }

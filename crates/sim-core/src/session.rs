@@ -19,3 +19,7 @@ impl Session {
         }
     }
 }
+
+pub fn debug_dump_session(session: &Session) {
+    println!("session: state={:?}", session.state);
+}

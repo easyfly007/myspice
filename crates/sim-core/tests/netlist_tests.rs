@@ -99,6 +99,15 @@ fn netlist_elaboration_applies_params() {
 }
 
 #[test]
+fn netlist_elaboration_applies_subckt_params() {
+    let input = ".subckt buf in out RVAL=1k\nR1 in out RVAL\n.ends\nX1 a b buf RVAL=2k\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    assert_eq!(elab.instances.len(), 1);
+    assert_eq!(elab.instances[0].value.as_deref(), Some("2000"));
+}
+
+#[test]
 fn netlist_parser_expands_include() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -116,4 +125,33 @@ fn netlist_parser_expands_include() {
         .filter(|stmt| matches!(stmt, Stmt::Device(_)))
         .count();
     assert!(device_count >= 2);
+}
+
+#[test]
+fn netlist_param_expression_evaluates() {
+    let input = ".param RVAL=1k+1k\nR1 in out RVAL\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    assert_eq!(elab.instances.len(), 1);
+    assert_eq!(elab.instances[0].value.as_deref(), Some("2000"));
+}
+
+#[test]
+fn netlist_controlled_source_poly_is_accepted() {
+    let input = "E1 out 0 in 0 POLY(1) 1 2\n.end\n";
+    let ast = parse_netlist(input);
+    assert!(ast.errors.is_empty());
+}
+
+#[test]
+fn netlist_elaboration_expands_nested_subckt() {
+    let input = ".subckt leaf a b\nR1 a b 1k\n.ends\n.subckt mid in out\nX1 in out leaf\n.ends\nXtop n1 n2 mid\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    assert_eq!(elab.instances.len(), 1);
+    assert_eq!(elab.instances[0].name, "Xtop.X1.R1");
+    assert_eq!(
+        elab.instances[0].nodes,
+        vec!["n1".to_string(), "n2".to_string()]
+    );
 }
