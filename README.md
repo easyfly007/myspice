@@ -28,7 +28,7 @@ Parsed -> Elaborated -> Ready -> Running -> Completed
 ResultStore:
 
 - run_id: 每次仿真唯一标识
-- analysis_type: OP / DC sweep
+- analysis_type: OP / DC sweep / TRAN
 - metadata: 迭代次数、收敛信息、时间戳
 - data: 节点电压、器件电流、扫描曲线等
 
@@ -51,12 +51,14 @@ ResultStore:
 
 - POST /v1/run/op
 - POST /v1/run/dc
+- POST /v1/run/tran
 - GET /v1/runs
 - GET /v1/runs/{run_id}
 - GET /v1/runs/{run_id}/signals
 - GET /v1/runs/{run_id}/waveform?signal=V(n001)
 - GET /v1/runs/{run_id}/op
 - GET /v1/runs/{run_id}/dc
+- GET /v1/runs/{run_id}/tran
 - POST /v1/runs/{run_id}/export
 
 ## AI 交互与 CLI
@@ -105,7 +107,7 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 
 - 注释行: 以 * 开头
 - 续行: 以 + 开头
-- 语句: .title .include .param .model .subckt .ends .op .dc .end
+- 语句: .title .include .param .model .subckt .ends .op .dc .tran .end
 - 器件: R C L V I D M E G F H
 - 参数: param=expr，单位后缀 f p n u m k meg g t
 - 子电路: .subckt / X 实例化
@@ -128,27 +130,86 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - 首先支持 PSF 文本格式
 - 逐步扩展: ngspice raw / PSF / FSDB
 
-## 目录结构建议
+## 当前目录结构
 
-建议以 workspace 形式组织:
+当前已落地的 workspace 结构如下:
 
-- crates/sim-core: 仿真核心 (解析、拓扑、MNA、求解器)
+- crates/sim-core: 仿真核心 (解析、拓扑、MNA、求解器、会话、结果存储)
+  - src/netlist.rs
+  - src/topology.rs
+  - src/mna.rs
+  - src/solver.rs
+  - src/session.rs
+  - src/result_store.rs
+  - tests/netlist_parse.rs
+  - tests/dc_smoke.rs
+  - tests/netlist_tests.rs
+  - tests/topology_tests.rs
+  - tests/mna_tests.rs
+  - tests/solver_tests.rs
+  - tests/session_tests.rs
+  - tests/result_store_tests.rs
 - crates/sim-devices: 器件模型库与 BSIM 占位
-- crates/sim-api: API 服务层 (HTTP/IPC)
-- crates/sim-cli: CLI 启动器与交互模式
+  - src/model.rs
+  - src/passive.rs
+  - src/source.rs
+  - src/diode.rs
+  - src/mosfet.rs
+  - tests/model_tests.rs
+  - tests/passive_tests.rs
+  - tests/source_tests.rs
+  - tests/diode_tests.rs
+  - tests/mosfet_tests.rs
+- crates/sim-api: API 服务层 (schema/session_api/http 占位)
+  - src/schema.rs
+  - src/session_api.rs
+  - src/http.rs
+  - tests/schema_tests.rs
+  - tests/session_api_tests.rs
+  - tests/http_tests.rs
+- crates/sim-cli: CLI 启动器
+  - src/main.rs
+  - tests/cli_tests.rs
+- tests/fixtures/netlists: 网表 fixture
+  - basic_dc.cir
 - tools/ai-agent: Python AI 代理与 CLI 交互
+  - cli.py
+  - tests/test_cli_smoke.py
 - tools/gui: PySide6 GUI (后续阶段)
-- docs: 设计文档与规范
+  - README.md
 
-## 里程碑建议
+## 测试结构
 
-- M0: 项目脚手架与基本目录结构
-- M1: Netlist 解析/展开 + 基础器件数据结构
-- M2: DC 求解最小链路 (R/L/C/源/二极管)
-- M3: MOSFET 接口占位 + BSIM 参数注册
-- M4: 交互式 API + ResultStore
-- M5: CLI + AI 代理 (Python)
-- M6: PSF 文本输出
-- M7: 性能扩展 (稀疏求解器、内存优化)
-- M8: GUI 原型 + Netlist Schematic
-*** End Patch
+- crates/sim-core/tests: Rust 单元与集成测试
+- crates/sim-devices/tests: 器件模型单元测试
+- crates/sim-api/tests: API 层单元测试
+- crates/sim-cli/tests: CLI 单元测试
+- tests/fixtures/netlists: 网表 fixture 用例
+- tools/ai-agent/tests: Python CLI/代理测试
+
+## 里程碑计划
+
+### W0: 项目脚手架与目录结构
+目标: 建立 workspace 和基础模块边界，打通最小构建链路。  
+验收标准: 能编译通过，核心 crate 可被独立引用。  
+交付物: 目录结构、基础配置、最小可运行入口。
+
+### W1: 网表解析与核心数据结构
+目标: 完成 SPICE 网表解析、语义展开入口与基础器件数据结构，形成仿真核心流程骨架。  
+验收标准: 能解析典型网表并生成展开后的实例清单与拓扑信息。  
+交付物: 解析器、符号表、基础器件结构与核心流程文档。
+
+### W2: DC 仿真引擎与 MOSFET 框架
+目标: 打通 DC 仿真核心能力，完成 MOSFET modeling 框架、交互 API 与 ResultStore。  
+验收标准: 支持基础器件 DC 仿真并输出结构化结果，MOSFET 接口可被调用。  
+交付物: DC 求解链路、MOSFET 接口占位、API 原型与结果存储模块。
+
+### W3: CLI 与交互体验 + 波形输出
+目标: 完成 CLI + AI 代理的交互流程，提供结果查询与波形输出能力。  
+验收标准: CLI 能驱动仿真与查询结果，支持 PSF 文本输出。  
+交付物: CLI 程序、交互协议、PSF 文本输出实现与示例用例。
+
+### W4: 首版优化与稳定性完善
+目标: 强化性能、稳定性与错误诊断，完成首版可用性打磨。  
+验收标准: 典型小规模网表稳定运行，错误报告清晰，运行性能可接受。  
+交付物: 性能优化与诊断改进、回归用例与阶段总结。
