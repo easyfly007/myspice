@@ -56,9 +56,10 @@ sim-cli <netlist>
 - 支持 `.include` 递归读取 (基础版)
 - 支持子电路基础展开与参数映射 (简单覆盖规则)
 - 支持基础参数表达式求值 (加减乘除与括号，支持单位后缀)
-- 受控源 E/G 支持 POLY 语法的基础识别
+- 受控源 E/G/F/H 支持 POLY 语法解析
 - 支持嵌套子电路基础展开
 - 支持参数表达式函数: max/min/abs/if
+- 支持子电路内部 `.param` 作用域
 
 注意:
 
@@ -116,3 +117,81 @@ total=50 passed=50 failed=0 passrate=100.00%
 - 仿真结果字段说明
 - 交互式 API 使用方法
 - CLI 与 AI 代理的使用示例
+- KLU 求解器的使用与依赖说明
+- 仿真引擎核心结构说明 (Circuit/MNA/Solver)
+- 仿真引擎骨架的使用与调试说明
+
+当前进展:
+
+- 已加入 DC 基础 stamp（R/I/V/D/MOS）
+- MNA 骨架与单元测试已覆盖
+- KLU 接口为 stub，需链接 SuiteSparse 后启用
+- Newton 迭代与收敛控制骨架已加入
+- gmin/source stepping 基础接入
+- 二极管/MOS 非线性线性化（简化模型）
+- TRAN 骨架入口（时间步循环）
+- TRAN 电容/电感等效 stamp
+- TRAN 自适应步长与误差估计骨架
+- TRAN 非线性器件 Newton 迭代
+- TRAN 收敛失败时回退 gmin/source stepping
+- TRAN 加权误差估计
+
+## 6. KLU 求解器依赖说明
+
+MySpice 的线性求解器规划为 SuiteSparse 的 KLU。当前阶段仅完成规划与接口设计，正式启用时需要:
+
+- 安装 SuiteSparse（包含 KLU）
+- 在 Windows 环境准备预编译库或本地编译产物
+
+### 6.1 安装流程（草案）
+
+#### Windows（推荐）
+
+1) 安装 Visual Studio Build Tools（包含 C/C++ 工具链）
+2) 获取 SuiteSparse 预编译包或自行编译
+3) 配置环境变量或在构建系统中指定库路径
+
+建议路径约定:
+
+- 头文件: `C:\libs\suitesparse\include`
+- 库文件: `C:\libs\suitesparse\lib`
+
+#### Linux
+
+1) 使用系统包管理器安装 SuiteSparse  
+   - Ubuntu 示例: `sudo apt install libsuitesparse-dev`
+2) 确认 `klu.h` 与库文件可被构建系统找到
+
+#### macOS
+
+1) 使用 Homebrew 安装  
+   - `brew install suite-sparse`
+2) 确认库路径可被 Rust 构建系统访问
+
+### 6.2 构建系统配置（草案）
+
+建议采用 `build.rs` + 环境变量的方式自动发现 KLU。
+
+环境变量约定（示例）:
+
+- `SUITESPARSE_DIR`：SuiteSparse 根目录  
+- `KLU_INCLUDE_DIR`：头文件目录  
+- `KLU_LIB_DIR`：库文件目录  
+
+构建系统行为（建议）:
+
+1) 优先读取 `KLU_INCLUDE_DIR` / `KLU_LIB_DIR`
+2) 若未设置，则尝试 `SUITESPARSE_DIR/include` 与 `SUITESPARSE_DIR/lib`
+3) 最后尝试系统默认路径
+
+示例（Windows PowerShell）:
+
+```
+$env:SUITESPARSE_DIR="C:\libs\suitesparse"
+```
+
+示例（Linux/macOS）:
+
+```
+export SUITESPARSE_DIR=/usr/local
+```

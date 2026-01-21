@@ -141,12 +141,23 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - 参数表达式基础求值与受控源语法补充
 - 嵌套子电路基础展开
 - 基础测试用例与 spice-datasets 引用
+- 仿真引擎骨架（Circuit/MNA/Stamp/Engine/KLU stub）
+- DC 基础 stamp（R/I/V/D/MOS）与 MNA 骨架测试
+- Newton 迭代与收敛控制骨架
+- gmin/source stepping 基础接入
+- 二极管/MOS 非线性线性化（简化模型）
+- TRAN 骨架入口（时间步循环）
+- TRAN 电容/电感等效 stamp
+- TRAN 自适应步长与误差估计骨架
+- TRAN 非线性器件 Newton 迭代
+- TRAN 收敛失败时回退 gmin/source stepping
+- TRAN 加权误差估计
 
 待完善:
 
 - 语义展开的完整规则 (更复杂的参数表达式、作用域边界)
 - 设备级字段解析的完整规则 (受控源高级语法)
-- 求解器与实际仿真结果输出
+- 求解器与实际仿真结果输出（KLU 需链接）
 - API 服务实现与交互模式
 
 ## Netlist Parser 现状
@@ -158,9 +169,9 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - 器件识别：R/C/L/V/I/D/M/E/G/F/H/X
 - 字段抽取：节点、model、value、params
 - 基础校验：R/C/L/V/I/D/M/E/G/F/H 的节点/字段检查
-- 受控源基础：E/G 支持 POLY 语法识别
+- 受控源基础：E/G/F/H 支持 POLY 语法解析与系数存储
 - .include 递归读取与循环检测
-- .param 参数替换（全局 + 子电路局部覆盖）
+- .param 参数替换（全局 + 子电路局部覆盖 + 子电路内部 .param）
 - 表达式求值：+ - * / ( ) 与单位后缀 (含 meg)
 - 表达式函数：max/min/abs/if
 - 子电路展开：X 实例展开、嵌套子电路递归展开
@@ -170,6 +181,80 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - 语义展开完整规则（更复杂表达式/作用域）
 - 受控源高级语法（POLY 细节、多项式参数）
 - 设备字段解析的全面语法覆盖
+
+## Netlist Parser 下一步
+
+- 完善受控源高级语法（POLY 细节、多项式参数）
+- 完整语义展开规则（更复杂表达式与作用域边界）
+- 设备字段解析的全面语法覆盖与错误诊断完善
+
+## 仿真引擎下一步
+
+- 定义仿真核心数据结构（节点表、实例表、模型表）
+- MNA 方程构建骨架与 stamp 接口
+- DC 求解流程骨架（Newton 迭代、收敛判据）
+- TRAN 时间步管理与积分器接口（BE/TR 占位）
+- 结果采集与 ResultStore 对接
+
+## 仿真引擎规划（Core）
+
+核心结构:
+
+- Circuit IR: NodeTable / InstanceTable / ModelTable / AnalysisCmd
+- MNA Builder: SparseBuilder + StampContext + AuxVarTable
+- Solver: KLU 封装（analyze/factor/solve）
+- Analysis: DC / TRAN 引擎骨架
+- Result: ResultStore + 波形容器
+
+## Solver 规划（KLU）
+
+仿真引擎将直接使用 SuiteSparse 的 KLU 作为稀疏线性求解器。
+
+### KLU 调用链
+
+1) 初始化:
+- `klu_defaults(&mut common)`
+- `klu_analyze(n, Ap, Ai, &mut common)`
+
+2) 每次迭代:
+- 更新 `Ax`
+- `klu_factor(Ap, Ai, Ax, symbolic, &mut common)`
+- `klu_solve(symbolic, numeric, n, 1, b, &mut common)`
+
+3) 结构变化时:
+- 重新 `klu_analyze`
+
+### 稀疏矩阵构建（CSC）
+
+- `n`: 矩阵维度
+- `Ap: Vec<i64>`（列指针，长度 n+1）
+- `Ai: Vec<i64>`（行索引）
+- `Ax: Vec<f64>`（数值）
+
+### SparseBuilder 结构草案
+
+- `n: usize`
+- `col_entries: Vec<Vec<(usize, f64)>>`（按列收集）
+- `finalize() -> (Ap, Ai, Ax)`
+- `clear_values()`（保留结构，仅重置数值）
+
+### KluSolver 接口草案
+
+- `new(n, ap, ai)`
+- `analyze()`（结构变化时）
+- `factor(ax)`
+- `solve(b)`（原地）
+- `reset_pattern()`
+
+### 依赖说明
+
+- 依赖 SuiteSparse（KLU）
+- Windows 环境需要预编译或本地构建 SuiteSparse
+
+### 构建集成
+
+- 使用 `--features klu` 启用 KLU
+- 需要设置 `KLU_LIB_DIR` 或 `SUITESPARSE_DIR`
 
 ## 下一步 Todo
 
@@ -226,6 +311,7 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
   - README.md
 - docs: 项目文档
   - myspice_user_manual.md
+  - solver_klu_plan.md
 
 ## 测试结构
 

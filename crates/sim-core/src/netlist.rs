@@ -18,6 +18,12 @@ pub struct Param {
 }
 
 #[derive(Debug, Clone)]
+pub struct PolySpec {
+    pub degree: usize,
+    pub coeffs: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Stmt {
     Device(DeviceStmt),
     Control(ControlStmt),
@@ -35,6 +41,7 @@ pub struct DeviceStmt {
     pub value: Option<String>,
     pub params: Vec<Param>,
     pub extras: Vec<String>,
+    pub poly: Option<PolySpec>,
     pub raw: String,
     pub line: usize,
 }
@@ -260,7 +267,7 @@ fn parse_statement(
 
     let tokens: Vec<&str> = iter.collect();
     let (args, params) = split_args_params(&tokens);
-    let (nodes, model, value, extras) = split_device_fields(&kind, &args);
+    let (nodes, model, value, extras, poly) = split_device_fields(&kind, &args);
     let control = extract_control_name(&kind, &args);
     validate_device_fields(
         first,
@@ -270,6 +277,7 @@ fn parse_statement(
         &control,
         &value,
         &extras,
+        &poly,
         line_no,
         errors,
     );
@@ -283,6 +291,7 @@ fn parse_statement(
         value,
         params,
         extras,
+        poly,
         raw: line.to_string(),
         line: line_no,
     }));
@@ -309,15 +318,16 @@ fn split_args_params(tokens: &[&str]) -> (Vec<String>, Vec<Param>) {
 fn split_device_fields(
     kind: &DeviceKind,
     args: &[String],
-) -> (Vec<String>, Option<String>, Option<String>, Vec<String>) {
+) -> (Vec<String>, Option<String>, Option<String>, Vec<String>, Option<PolySpec>) {
     if args.is_empty() {
-        return (Vec::new(), None, None, Vec::new());
+        return (Vec::new(), None, None, Vec::new(), None);
     }
 
     let mut nodes = Vec::new();
     let mut model = None;
     let mut value = None;
     let mut extras = Vec::new();
+    let mut poly = None;
 
     match kind {
         DeviceKind::R | DeviceKind::C | DeviceKind::L | DeviceKind::V | DeviceKind::I => {
@@ -388,7 +398,16 @@ fn split_device_fields(
         }
     }
 
-    (nodes, model, value, extras)
+    if matches!(kind, DeviceKind::E | DeviceKind::G | DeviceKind::F | DeviceKind::H) {
+        let (poly_spec, remaining) = parse_poly(&extras);
+        poly = poly_spec;
+        extras = remaining;
+        if poly.is_some() {
+            value = None;
+        }
+    }
+
+    (nodes, model, value, extras, poly)
 }
 
 fn map_control_kind(command: &str) -> ControlKind {
@@ -414,6 +433,7 @@ fn validate_device_fields(
     control: &Option<String>,
     value: &Option<String>,
     extras: &[String],
+    poly: &Option<PolySpec>,
     line_no: usize,
     errors: &mut Vec<ParseError>,
 ) {
@@ -483,11 +503,25 @@ fn validate_device_fields(
                     message: format!("{} 需要 4 个节点", name),
                 });
             }
-            if value.is_none() && !has_poly_syntax(extras) {
+            if value.is_none() && poly.is_none() {
                 errors.push(ParseError {
                     line: line_no,
                     message: format!("{} 缺少增益值", name),
                 });
+            }
+            if poly.is_none() && !extras.is_empty() {
+                errors.push(ParseError {
+                    line: line_no,
+                    message: format!("{} 存在多余字段", name),
+                });
+            }
+            if let Some(spec) = poly {
+                if spec.coeffs.is_empty() {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!("{} POLY 缺少系数", name),
+                    });
+                }
             }
         }
         DeviceKind::F | DeviceKind::H => {
@@ -503,11 +537,25 @@ fn validate_device_fields(
                     message: format!("{} 缺少控制源", name),
                 });
             }
-            if value.is_none() {
+            if value.is_none() && poly.is_none() {
                 errors.push(ParseError {
                     line: line_no,
                     message: format!("{} 缺少增益值", name),
                 });
+            }
+            if poly.is_none() && !extras.is_empty() {
+                errors.push(ParseError {
+                    line: line_no,
+                    message: format!("{} 存在多余字段", name),
+                });
+            }
+            if let Some(spec) = poly {
+                if spec.coeffs.is_empty() {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!("{} POLY 缺少系数", name),
+                    });
+                }
             }
         }
         DeviceKind::X => {
@@ -544,8 +592,14 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
                 if matches!(device.kind, DeviceKind::X) {
                     if let Some(subckt_name) = device.model.as_deref() {
                         if let Some(def) = subckt_map.get(subckt_name) {
-                            let local_params =
-                                build_local_param_table(def, &device, &std::collections::HashMap::new(), &param_table);
+                            let body_params = collect_params_from_body(&def.body);
+                            let local_params = build_local_param_table(
+                                def,
+                                &device,
+                                &body_params,
+                                &std::collections::HashMap::new(),
+                                &param_table,
+                            );
                             let expanded = expand_subckt_instance_recursive(
                                 &device,
                                 def,
@@ -658,11 +712,19 @@ fn build_param_table(statements: &[Stmt]) -> std::collections::HashMap<String, S
 fn build_local_param_table(
     def: &SubcktDef,
     instance: &DeviceStmt,
+    body_params: &[Param],
     parent: &std::collections::HashMap<String, String>,
     global: &std::collections::HashMap<String, String>,
 ) -> std::collections::HashMap<String, String> {
     let mut params = std::collections::HashMap::new();
     for param in &def.params {
+        let key = param.key.to_ascii_lowercase();
+        let value = eval_expression_scoped(&params, parent, global, &param.value)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| param.value.clone());
+        params.insert(key, value);
+    }
+    for param in body_params {
         let key = param.key.to_ascii_lowercase();
         let value = eval_expression_scoped(&params, parent, global, &param.value)
             .map(|v| v.to_string())
@@ -770,6 +832,28 @@ fn extract_subckts(statements: &[Stmt]) -> (Vec<Stmt>, Vec<SubcktDef>, Vec<Parse
     (top_level, subckts, errors)
 }
 
+fn collect_params_from_body(body: &[Stmt]) -> Vec<Param> {
+    let mut params = Vec::new();
+    let mut depth = 0usize;
+    for stmt in body {
+        match stmt {
+            Stmt::Control(ctrl) if matches!(ctrl.kind, ControlKind::Subckt) => {
+                depth += 1;
+            }
+            Stmt::Control(ctrl) if matches!(ctrl.kind, ControlKind::Ends) => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            Stmt::Control(ctrl) if matches!(ctrl.kind, ControlKind::Param) && depth == 0 => {
+                params.extend(ctrl.params.clone());
+            }
+            _ => {}
+        }
+    }
+    params
+}
+
 fn expand_subckt_instance(
     instance: &DeviceStmt,
     def: &SubcktDef,
@@ -833,8 +917,36 @@ fn extract_control_name(kind: &DeviceKind, args: &[String]) -> Option<String> {
     }
 }
 
-fn has_poly_syntax(tokens: &[String]) -> bool {
-    tokens.iter().any(|token| token.to_ascii_uppercase().starts_with("POLY"))
+fn parse_poly(tokens: &[String]) -> (Option<PolySpec>, Vec<String>) {
+    for (idx, token) in tokens.iter().enumerate() {
+        let upper = token.to_ascii_uppercase();
+        if upper.starts_with("POLY") {
+            let mut degree_token = None;
+            let mut skip = 1;
+
+            if upper.starts_with("POLY(") && upper.ends_with(')') {
+                degree_token = Some(token.trim_start_matches("POLY(").trim_end_matches(')'));
+            } else if idx + 1 < tokens.len() {
+                let next = tokens[idx + 1].trim();
+                if next.starts_with('(') && next.ends_with(')') {
+                    degree_token = Some(next.trim_start_matches('(').trim_end_matches(')'));
+                    skip = 2;
+                } else if next.chars().all(|c| c.is_ascii_digit()) {
+                    degree_token = Some(next);
+                    skip = 2;
+                }
+            }
+
+            let degree = degree_token
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1);
+            let coeffs = tokens[idx + skip..].to_vec();
+            let mut remaining = Vec::new();
+            remaining.extend_from_slice(&tokens[..idx]);
+            return (Some(PolySpec { degree, coeffs }), remaining);
+        }
+    }
+    (None, tokens.to_vec())
 }
 
 fn eval_expression(
@@ -1149,8 +1261,14 @@ fn expand_subckt_instance_recursive(
                 if matches!(scoped.kind, DeviceKind::X) {
                     if let Some(subckt_name) = scoped.model.as_deref() {
                         if let Some(child_def) = nested_map.get(subckt_name) {
-                            let child_params =
-                                build_local_param_table(child_def, &scoped, local_params, global_params);
+                            let body_params = collect_params_from_body(&child_def.body);
+                            let child_params = build_local_param_table(
+                                child_def,
+                                &scoped,
+                                &body_params,
+                                local_params,
+                                global_params,
+                            );
                             let child_expanded = expand_subckt_instance_recursive(
                                 &scoped,
                                 child_def,

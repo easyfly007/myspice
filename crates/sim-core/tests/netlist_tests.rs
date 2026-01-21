@@ -162,6 +162,32 @@ fn netlist_param_expression_if() {
 }
 
 #[test]
+fn netlist_poly_is_parsed_into_spec() {
+    let input = "G1 out 0 in 0 POLY(2) 1 2 3\n.end\n";
+    let ast = parse_netlist(input);
+    let device = ast
+        .statements
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Device(dev) => Some(dev),
+            _ => None,
+        })
+        .expect("device not found");
+    let poly = device.poly.as_ref().expect("poly not found");
+    assert_eq!(poly.degree, 2);
+    assert_eq!(poly.coeffs.len(), 3);
+}
+
+#[test]
+fn netlist_subckt_body_param_is_applied() {
+    let input = ".subckt buf in out\n.param RVAL=3k\nR1 in out RVAL\n.ends\nX1 a b buf\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    assert_eq!(elab.instances.len(), 1);
+    assert_eq!(elab.instances[0].value.as_deref(), Some("3000"));
+}
+
+#[test]
 fn netlist_elaboration_expands_nested_subckt() {
     let input = ".subckt leaf a b\nR1 a b 1k\n.ends\n.subckt mid in out\nX1 in out leaf\n.ends\nXtop n1 n2 mid\n.end\n";
     let ast = parse_netlist(input);
