@@ -4,7 +4,7 @@ use crate::analysis::{
 use crate::circuit::Circuit;
 use crate::mna::MnaBuilder;
 use crate::result_store::{AnalysisType, ResultStore, RunId, RunResult, RunStatus};
-use crate::solver::KluSolver;
+use crate::solver::DefaultSolver;
 use crate::stamp::{update_transient_state, DeviceStamp, InstanceStamp, TransientState};
 use crate::newton::{debug_dump_newton_with_tag, run_newton_with_stepping, NewtonConfig};
 
@@ -47,7 +47,7 @@ impl Engine {
         let config = NewtonConfig::default();
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
-        let mut solver = KluSolver::new(node_count);
+        let mut solver = DefaultSolver::new(node_count);
         let result = run_newton_with_stepping(&config, &mut x, |x, gmin, source_scale| {
             let mut mna = MnaBuilder::new(node_count);
             for inst in &self.circuit.instances.instances {
@@ -86,7 +86,7 @@ impl Engine {
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
         let mut state = TransientState::default();
-        let mut solver = KluSolver::new(node_count);
+        let mut solver = DefaultSolver::new(node_count);
         let config = TimeStepConfig {
             tstep: 1e-6,
             tstop: 1e-5,

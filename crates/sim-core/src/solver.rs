@@ -13,11 +13,210 @@ pub trait LinearSolver {
     fn reset_pattern(&mut self);
 }
 
+#[derive(Debug)]
+pub struct DenseSolver {
+    pub n: usize,
+    lu: Vec<f64>,
+    pivots: Vec<usize>,
+}
+
+impl DenseSolver {
+    pub fn new(n: usize) -> Self {
+        Self {
+            n,
+            lu: vec![0.0; n * n],
+            pivots: (0..n).collect(),
+        }
+    }
+
+    fn ensure_capacity(&mut self, n: usize) {
+        if self.n != n {
+            self.n = n;
+            self.lu.resize(n * n, 0.0);
+            self.pivots = (0..n).collect();
+        }
+    }
+
+    fn build_dense(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
+        let n = self.n;
+        if ap.len() != n + 1 {
+            return Err(SolverError::AnalyzeFailed);
+        }
+        self.lu.fill(0.0);
+        for col in 0..n {
+            let start = ap[col] as usize;
+            let end = ap[col + 1] as usize;
+            for idx in start..end {
+                let row = ai[idx] as usize;
+                if row < n {
+                    self.lu[row * n + col] += ax[idx];
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn factorize(&mut self) -> Result<(), SolverError> {
+        let n = self.n;
+        for i in 0..n {
+            self.pivots[i] = i;
+        }
+        for k in 0..n {
+            let mut pivot = k;
+            let mut max_val = self.lu[k * n + k].abs();
+            for i in (k + 1)..n {
+                let val = self.lu[i * n + k].abs();
+                if val > max_val {
+                    max_val = val;
+                    pivot = i;
+                }
+            }
+            if max_val == 0.0 {
+                return Err(SolverError::FactorFailed);
+            }
+            if pivot != k {
+                for j in 0..n {
+                    self.lu.swap(k * n + j, pivot * n + j);
+                }
+                self.pivots.swap(k, pivot);
+            }
+            let pivot_val = self.lu[k * n + k];
+            for i in (k + 1)..n {
+                let factor = self.lu[i * n + k] / pivot_val;
+                self.lu[i * n + k] = factor;
+                for j in (k + 1)..n {
+                    self.lu[i * n + j] -= factor * self.lu[k * n + j];
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl LinearSolver for DenseSolver {
+    fn prepare(&mut self, n: usize) {
+        self.ensure_capacity(n);
+    }
+
+    fn analyze(&mut self, _ap: &[i64], _ai: &[i64]) -> Result<(), SolverError> {
+        Ok(())
+    }
+
+    fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
+        self.build_dense(ap, ai, ax)?;
+        self.factorize()
+    }
+
+    fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
+        let n = self.n;
+        if rhs.len() != n {
+            return Err(SolverError::SolveFailed);
+        }
+        let mut b = vec![0.0; n];
+        for i in 0..n {
+            b[i] = rhs[self.pivots[i]];
+        }
+        for i in 0..n {
+            let mut sum = b[i];
+            for j in 0..i {
+                sum -= self.lu[i * n + j] * b[j];
+            }
+            b[i] = sum;
+        }
+        for i in (0..n).rev() {
+            let mut sum = b[i];
+            for j in (i + 1)..n {
+                sum -= self.lu[i * n + j] * rhs[j];
+            }
+            let diag = self.lu[i * n + i];
+            if diag == 0.0 {
+                return Err(SolverError::SolveFailed);
+            }
+            rhs[i] = sum / diag;
+        }
+        Ok(())
+    }
+
+    fn reset_pattern(&mut self) {}
+}
+
+#[derive(Debug)]
+pub struct DefaultSolver {
+    inner: SolverImpl,
+}
+
+#[derive(Debug)]
+enum SolverImpl {
+    #[cfg(feature = "klu")]
+    Klu(KluSolver),
+    Dense(DenseSolver),
+}
+
+impl DefaultSolver {
+    pub fn new(n: usize) -> Self {
+        let inner = if cfg!(feature = "klu") {
+            #[cfg(feature = "klu")]
+            {
+                SolverImpl::Klu(KluSolver::new(n))
+            }
+            #[cfg(not(feature = "klu"))]
+            {
+                SolverImpl::Dense(DenseSolver::new(n))
+            }
+        } else {
+            SolverImpl::Dense(DenseSolver::new(n))
+        };
+        Self { inner }
+    }
+}
+
+impl LinearSolver for DefaultSolver {
+    fn prepare(&mut self, n: usize) {
+        match &mut self.inner {
+            #[cfg(feature = "klu")]
+            SolverImpl::Klu(solver) => solver.prepare(n),
+            SolverImpl::Dense(solver) => solver.prepare(n),
+        }
+    }
+
+    fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError> {
+        match &mut self.inner {
+            #[cfg(feature = "klu")]
+            SolverImpl::Klu(solver) => solver.analyze(ap, ai),
+            SolverImpl::Dense(solver) => solver.analyze(ap, ai),
+        }
+    }
+
+    fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
+        match &mut self.inner {
+            #[cfg(feature = "klu")]
+            SolverImpl::Klu(solver) => solver.factor(ap, ai, ax),
+            SolverImpl::Dense(solver) => solver.factor(ap, ai, ax),
+        }
+    }
+
+    fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
+        match &mut self.inner {
+            #[cfg(feature = "klu")]
+            SolverImpl::Klu(solver) => solver.solve(rhs),
+            SolverImpl::Dense(solver) => solver.solve(rhs),
+        }
+    }
+
+    fn reset_pattern(&mut self) {
+        match &mut self.inner {
+            #[cfg(feature = "klu")]
+            SolverImpl::Klu(solver) => solver.reset_pattern(),
+            SolverImpl::Dense(solver) => solver.reset_pattern(),
+        }
+    }
+}
+
 pub struct KluSolver {
     pub n: usize,
     pub enabled: bool,
-    last_ap_len: usize,
-    last_ai_len: usize,
+    last_ap: Vec<i64>,
+    last_ai: Vec<i64>,
     #[cfg(feature = "klu")]
     symbolic: *mut klu_sys::klu_symbolic,
     #[cfg(feature = "klu")]
@@ -31,8 +230,8 @@ impl KluSolver {
         let mut solver = Self {
             n,
             enabled: cfg!(feature = "klu"),
-            last_ap_len: 0,
-            last_ai_len: 0,
+            last_ap: Vec::new(),
+            last_ai: Vec::new(),
             #[cfg(feature = "klu")]
             symbolic: std::ptr::null_mut(),
             #[cfg(feature = "klu")]
@@ -51,10 +250,7 @@ impl KluSolver {
         if !self.enabled {
             return Err(SolverError::AnalyzeFailed);
         }
-        if !self.symbolic.is_null()
-            && self.last_ap_len == ap.len()
-            && self.last_ai_len == ai.len()
-        {
+        if !self.symbolic.is_null() && self.last_ap == ap && self.last_ai == ai {
             return Ok(());
         }
         #[cfg(feature = "klu")]
@@ -72,8 +268,8 @@ impl KluSolver {
                 return Err(SolverError::AnalyzeFailed);
             }
         }
-        self.last_ap_len = ap.len();
-        self.last_ai_len = ai.len();
+        self.last_ap = ap.to_vec();
+        self.last_ai = ai.to_vec();
         Ok(())
     }
 
@@ -136,8 +332,8 @@ impl KluSolver {
             self.symbolic = std::ptr::null_mut();
             self.numeric = std::ptr::null_mut();
         }
-        self.last_ap_len = 0;
-        self.last_ai_len = 0;
+        self.last_ap.clear();
+        self.last_ai.clear();
     }
 }
 
@@ -163,20 +359,6 @@ impl LinearSolver for KluSolver {
 
     fn reset_pattern(&mut self) {
         KluSolver::reset_pattern(self)
-    }
-}
-
-impl LinearSolver for KluSolver {
-    fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError> {
-        KluSolver::analyze(self, ap, ai)
-    }
-
-    fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
-        KluSolver::factor(self, ap, ai, ax)
-    }
-
-    fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
-        KluSolver::solve(self, rhs)
     }
 }
 

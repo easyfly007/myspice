@@ -210,6 +210,88 @@ fn netlist_poly_requires_coeffs() {
 }
 
 #[test]
+fn netlist_poly_controls_are_validated() {
+    let ok = "E1 out 0 in 0 POLY(2) a 0 b 0 1 2 3\n.end\n";
+    let ast_ok = parse_netlist(ok);
+    assert!(ast_ok.errors.is_empty());
+
+    let bad = "E1 out 0 in 0 POLY(2) a 0 1 2 3\n.end\n";
+    let ast_bad = parse_netlist(bad);
+    assert!(!ast_bad.errors.is_empty());
+}
+
+#[test]
+fn netlist_poly_fh_controls_are_validated() {
+    let ok = "F1 out 0 POLY(2) V1 V2 1 2 3\n.end\n";
+    let ast_ok = parse_netlist(ok);
+    assert!(ast_ok.errors.is_empty());
+
+    let bad = "F1 out 0 POLY(2) V1 1 2 3\n.end\n";
+    let ast_bad = parse_netlist(bad);
+    assert!(!ast_bad.errors.is_empty());
+}
+
+#[test]
+fn netlist_voltage_source_waveform_is_allowed() {
+    let input = "V1 in 0 PULSE(0 1 1n 1n 1n 10n 20n)\n.end\n";
+    let ast = parse_netlist(input);
+    assert!(ast.errors.is_empty());
+}
+
+#[test]
+fn netlist_mos_three_node_is_allowed() {
+    let input = "M1 d g s nmos\n.end\n";
+    let ast = parse_netlist(input);
+    let device = ast
+        .statements
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Device(dev) => Some(dev),
+            _ => None,
+        })
+        .expect("device not found");
+    assert_eq!(device.nodes.len(), 4);
+    assert_eq!(device.nodes[3], "0");
+    assert_eq!(device.model.as_deref(), Some("nmos"));
+}
+
+#[test]
+fn netlist_model_params_in_parentheses_are_parsed() {
+    let input = ".model DTEST D (IS=1e-14 N=1)\n.end\n";
+    let ast = parse_netlist(input);
+    let model = ast
+        .statements
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Control(ctrl) if matches!(ctrl.kind, ControlKind::Model) => Some(ctrl),
+            _ => None,
+        })
+        .expect("model not found");
+    assert_eq!(model.model_name.as_deref(), Some("DTEST"));
+    assert_eq!(model.model_type.as_deref(), Some("D"));
+    assert_eq!(model.params.len(), 2);
+    assert_eq!(model.params[0].key, "IS");
+    assert_eq!(model.params[1].key, "N");
+}
+
+#[test]
+fn netlist_param_tokens_with_commas_are_split() {
+    let input = "R1 in out 1k W=1u,L=2u\n.end\n";
+    let ast = parse_netlist(input);
+    let device = ast
+        .statements
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Device(dev) => Some(dev),
+            _ => None,
+        })
+        .expect("device not found");
+    assert_eq!(device.params.len(), 2);
+    assert_eq!(device.params[0].key, "W");
+    assert_eq!(device.params[1].key, "L");
+}
+
+#[test]
 fn netlist_subckt_body_param_is_applied() {
     let input = ".subckt buf in out\n.param RVAL=3k\nR1 in out RVAL\n.ends\nX1 a b buf\n.end\n";
     let ast = parse_netlist(input);

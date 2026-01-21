@@ -302,13 +302,37 @@ fn split_args_params(tokens: &[&str]) -> (Vec<String>, Vec<Param>) {
     let mut params = Vec::new();
 
     for token in tokens {
-        if let Some((key, value)) = token.split_once('=') {
-            params.push(Param {
-                key: key.to_string(),
-                value: value.to_string(),
-            });
+        let parts: Vec<&str> = if token.contains('=') && token.contains(',') {
+            token.split(',').collect()
         } else {
-            args.push(token.to_string());
+            vec![*token]
+        };
+        for raw_part in parts {
+            let mut part = raw_part.trim();
+            if part.is_empty() {
+                continue;
+            }
+            if part.starts_with('(') && part.contains('=') {
+                part = &part[1..];
+            }
+            if part.ends_with(')') && part.contains('=') {
+                if let Some(eq_pos) = part.find('=') {
+                    if !part[eq_pos + 1..].contains('(') {
+                        part = &part[..part.len() - 1];
+                    }
+                }
+            }
+            if part.is_empty() {
+                continue;
+            }
+            if let Some((key, value)) = part.split_once('=') {
+                params.push(Param {
+                    key: key.to_string(),
+                    value: value.to_string(),
+                });
+            } else {
+                args.push(part.to_string());
+            }
         }
     }
 
@@ -338,6 +362,8 @@ fn split_device_fields(
                     if args.len() > 4 {
                         extras.extend_from_slice(&args[4..]);
                     }
+                } else if matches!(kind, DeviceKind::V | DeviceKind::I) && is_waveform_token(&args[2]) {
+                    extras.extend_from_slice(&args[2..]);
                 } else {
                     value = Some(args[2].clone());
                     if args.len() > 3 {
@@ -366,6 +392,10 @@ fn split_device_fields(
                 if args.len() > 5 {
                     extras.extend_from_slice(&args[5..]);
                 }
+            } else if args.len() == 4 {
+                nodes.extend_from_slice(&args[0..3]);
+                nodes.push("0".to_string());
+                model = Some(args[3].clone());
             } else {
                 nodes.extend_from_slice(args);
             }
@@ -373,9 +403,13 @@ fn split_device_fields(
         DeviceKind::E | DeviceKind::G => {
             if args.len() >= 5 {
                 nodes.extend_from_slice(&args[0..4]);
-                value = Some(args[4].clone());
-                if args.len() > 5 {
-                    extras.extend_from_slice(&args[5..]);
+                if is_poly_token(&args[4]) {
+                    extras.extend_from_slice(&args[4..]);
+                } else {
+                    value = Some(args[4].clone());
+                    if args.len() > 5 {
+                        extras.extend_from_slice(&args[5..]);
+                    }
                 }
             } else {
                 nodes.extend_from_slice(args);
@@ -384,9 +418,13 @@ fn split_device_fields(
         DeviceKind::F | DeviceKind::H => {
             if args.len() >= 4 {
                 nodes.extend_from_slice(&args[0..2]);
-                value = Some(args[3].clone());
-                if args.len() > 4 {
-                    extras.extend_from_slice(&args[4..]);
+                if is_poly_token(&args[3]) {
+                    extras.extend_from_slice(&args[3..]);
+                } else {
+                    value = Some(args[3].clone());
+                    if args.len() > 4 {
+                        extras.extend_from_slice(&args[4..]);
+                    }
                 }
             } else {
                 nodes.extend_from_slice(args);
@@ -415,6 +453,26 @@ fn split_device_fields(
     }
 
     (nodes, model, value, extras, poly)
+}
+
+fn is_poly_token(token: &str) -> bool {
+    token.to_ascii_uppercase().starts_with("POLY")
+}
+
+fn is_waveform_token(token: &str) -> bool {
+    let upper = token.to_ascii_uppercase();
+    upper == "AC"
+        || upper == "SIN"
+        || upper == "PULSE"
+        || upper == "EXP"
+        || upper == "SFFM"
+        || upper == "PWL"
+        || upper.starts_with("SIN(")
+        || upper.starts_with("PULSE(")
+        || upper.starts_with("EXP(")
+        || upper.starts_with("SFFM(")
+        || upper.starts_with("PWL(")
+        || upper.starts_with("AC(")
 }
 
 fn map_control_kind(command: &str) -> ControlKind {
@@ -451,7 +509,7 @@ fn validate_device_fields(
     if nodes.is_empty() {
         errors.push(ParseError {
             line: line_no,
-            message: format!("器件缺少节点定义: {}", name),
+            message: format!("器件缺少节点定义: {} {}", name, format_fields(nodes, model, control, value, extras, poly)),
         });
         return;
     }
@@ -465,13 +523,33 @@ fn validate_device_fields(
             if nodes.len() != 2 {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 需要 2 个节点", name),
+                    message: format!(
+                        "{} 需要 2 个节点，当前={} {}",
+                        name,
+                        nodes.len(),
+                        format_fields(nodes, model, control, value, extras, poly)
+                    ),
                 });
             }
-            if value.is_none() {
+            if value.is_none() && !(matches!(kind, DeviceKind::V | DeviceKind::I) && has_waveform(extras)) {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少数值", name),
+                    message: format!("{} 缺少数值 {}", name, format_fields(nodes, model, control, value, extras, poly)),
+                });
+            }
+            if matches!(kind, DeviceKind::R | DeviceKind::C | DeviceKind::L) && !extras.is_empty() {
+                errors.push(ParseError {
+                    line: line_no,
+                    message: format!("{} 存在多余字段 {}", name, format_fields(nodes, model, control, value, extras, poly)),
+                });
+            }
+            if matches!(kind, DeviceKind::V | DeviceKind::I)
+                && !extras.is_empty()
+                && !has_waveform(extras)
+            {
+                errors.push(ParseError {
+                    line: line_no,
+                    message: format!("{} 存在多余字段 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
         }
@@ -479,13 +557,18 @@ fn validate_device_fields(
             if nodes.len() != 2 {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 需要 2 个节点", name),
+                    message: format!(
+                        "{} 需要 2 个节点，当前={} {}",
+                        name,
+                        nodes.len(),
+                        format_fields(nodes, model, control, value, extras, poly)
+                    ),
                 });
             }
             if model.is_none() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少模型名", name),
+                    message: format!("{} 缺少模型名 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
         }
@@ -493,13 +576,18 @@ fn validate_device_fields(
             if nodes.len() < 4 {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 需要至少 4 个节点", name),
+                    message: format!(
+                        "{} 需要至少 4 个节点，当前={} {}",
+                        name,
+                        nodes.len(),
+                        format_fields(nodes, model, control, value, extras, poly)
+                    ),
                 });
             }
             if model.is_none() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少模型名", name),
+                    message: format!("{} 缺少模型名 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
         }
@@ -507,31 +595,49 @@ fn validate_device_fields(
             if nodes.len() != 4 {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 需要 4 个节点", name),
+                    message: format!(
+                        "{} 需要 4 个节点，当前={} {}",
+                        name,
+                        nodes.len(),
+                        format_fields(nodes, model, control, value, extras, poly)
+                    ),
                 });
             }
             if value.is_none() && poly.is_none() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少增益值", name),
+                    message: format!("{} 缺少增益值 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
             if poly.is_none() && !extras.is_empty() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 存在多余字段", name),
+                    message: format!("{} 存在多余字段 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
             if let Some(spec) = poly {
                 if spec.coeffs.is_empty() {
                     errors.push(ParseError {
                         line: line_no,
-                        message: format!("{} POLY 缺少系数", name),
+                        message: format!("{} POLY 缺少系数 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                     });
                 } else if spec.coeffs.len() < spec.degree + 1 {
                     errors.push(ParseError {
                         line: line_no,
-                        message: format!("{} POLY 系数数量不足", name),
+                        message: format!("{} POLY 系数数量不足 {}", name, format_fields(nodes, model, control, value, extras, poly)),
+                    });
+                }
+                let expected_controls = spec.degree * 2;
+                if extras.len() != expected_controls {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!(
+                            "{} POLY 控制节点数量不匹配，期望={} 实际={} {}",
+                            name,
+                            expected_controls,
+                            extras.len(),
+                            format_fields(nodes, model, control, value, extras, poly)
+                        ),
                     });
                 }
             }
@@ -540,37 +646,55 @@ fn validate_device_fields(
             if nodes.len() != 2 {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 需要 2 个节点", name),
+                    message: format!(
+                        "{} 需要 2 个节点，当前={} {}",
+                        name,
+                        nodes.len(),
+                        format_fields(nodes, model, control, value, extras, poly)
+                    ),
                 });
             }
-            if control.is_none() {
+            if control.is_none() && poly.is_none() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少控制源", name),
+                    message: format!("{} 缺少控制源 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
             if value.is_none() && poly.is_none() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少增益值", name),
+                    message: format!("{} 缺少增益值 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
             if poly.is_none() && !extras.is_empty() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 存在多余字段", name),
+                    message: format!("{} 存在多余字段 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
             if let Some(spec) = poly {
                 if spec.coeffs.is_empty() {
                     errors.push(ParseError {
                         line: line_no,
-                        message: format!("{} POLY 缺少系数", name),
+                        message: format!("{} POLY 缺少系数 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                     });
                 } else if spec.coeffs.len() < spec.degree + 1 {
                     errors.push(ParseError {
                         line: line_no,
-                        message: format!("{} POLY 系数数量不足", name),
+                        message: format!("{} POLY 系数数量不足 {}", name, format_fields(nodes, model, control, value, extras, poly)),
+                    });
+                }
+                let expected_controls = spec.degree;
+                if extras.len() != expected_controls {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!(
+                            "{} POLY 控制源数量不匹配，期望={} 实际={} {}",
+                            name,
+                            expected_controls,
+                            extras.len(),
+                            format_fields(nodes, model, control, value, extras, poly)
+                        ),
                     });
                 }
             }
@@ -579,13 +703,13 @@ fn validate_device_fields(
             if nodes.is_empty() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少节点", name),
+                    message: format!("{} 缺少节点 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
             if model.is_none() {
                 errors.push(ParseError {
                     line: line_no,
-                    message: format!("{} 缺少子电路名", name),
+                    message: format!("{} 缺少子电路名 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
         }
@@ -929,9 +1053,17 @@ fn map_subckt_node(
 
 fn extract_control_name(kind: &DeviceKind, args: &[String]) -> Option<String> {
     match kind {
-        DeviceKind::F | DeviceKind::H => args.get(2).cloned(),
+        DeviceKind::F | DeviceKind::H => match args.get(2) {
+            Some(token) if is_poly_token(token) => None,
+            Some(token) => Some(token.clone()),
+            None => None,
+        },
         _ => None,
     }
+}
+
+fn has_waveform(extras: &[String]) -> bool {
+    extras.iter().any(|token| is_waveform_token(token))
 }
 
 fn parse_poly(tokens: &[String]) -> (Option<PolySpec>, Vec<String>) {
