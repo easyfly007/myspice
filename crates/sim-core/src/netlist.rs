@@ -552,6 +552,16 @@ fn validate_device_fields(
                     message: format!("{} 存在多余字段 {}", name, format_fields(nodes, model, control, value, extras, poly)),
                 });
             }
+            if matches!(kind, DeviceKind::V | DeviceKind::I) {
+                if let Some(wave) = waveform_keyword(extras) {
+                    if extras.len() == 1 {
+                        errors.push(ParseError {
+                            line: line_no,
+                            message: format!("{} 波形 {} 缺少参数 {}", name, wave, format_fields(nodes, model, control, value, extras, poly)),
+                        });
+                    }
+                }
+            }
         }
         DeviceKind::D => {
             if nodes.len() != 2 {
@@ -1064,6 +1074,15 @@ fn extract_control_name(kind: &DeviceKind, args: &[String]) -> Option<String> {
 
 fn has_waveform(extras: &[String]) -> bool {
     extras.iter().any(|token| is_waveform_token(token))
+}
+
+fn waveform_keyword(extras: &[String]) -> Option<String> {
+    let token = extras.first()?;
+    let upper = token.to_ascii_uppercase();
+    match upper.as_str() {
+        "AC" | "SIN" | "PULSE" | "EXP" | "SFFM" | "PWL" => Some(upper),
+        _ => None,
+    }
 }
 
 fn format_fields(

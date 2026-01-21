@@ -256,6 +256,20 @@ fn netlist_mos_three_node_is_allowed() {
 }
 
 #[test]
+fn netlist_waveform_keyword_requires_args() {
+    let input = "V1 in 0 SIN\n.end\n";
+    let ast = parse_netlist(input);
+    assert!(!ast.errors.is_empty());
+}
+
+#[test]
+fn netlist_waveform_keyword_with_args_is_ok() {
+    let input = "V1 in 0 AC 1\n.end\n";
+    let ast = parse_netlist(input);
+    assert!(ast.errors.is_empty());
+}
+
+#[test]
 fn netlist_model_params_in_parentheses_are_parsed() {
     let input = ".model DTEST D (IS=1e-14 N=1)\n.end\n";
     let ast = parse_netlist(input);
