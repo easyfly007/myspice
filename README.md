@@ -152,6 +152,9 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - TRAN 非线性器件 Newton 迭代
 - TRAN 收敛失败时回退 gmin/source stepping
 - TRAN 加权误差估计
+- ResultStore 接入与仿真结果输出
+- PSF 文本输出（基础格式）
+- Solver 复用与 Newton 统一模块接入
 
 待完善:
 
@@ -169,11 +172,12 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 - 器件识别：R/C/L/V/I/D/M/E/G/F/H/X
 - 字段抽取：节点、model、value、params
 - 基础校验：R/C/L/V/I/D/M/E/G/F/H 的节点/字段检查
-- 受控源基础：E/G/F/H 支持 POLY 语法解析与系数存储
+- 受控源基础：E/G/F/H 支持 POLY 语法解析与系数校验
 - .include 递归读取与循环检测
 - .param 参数替换（全局 + 子电路局部覆盖 + 子电路内部 .param）
+- 电压/电流源支持 DC 关键字取值
 - 表达式求值：+ - * / ( ) 与单位后缀 (含 meg)
-- 表达式函数：max/min/abs/if
+- 表达式函数：max/min/abs/if，支持一元负号与幂运算 (^)
 - 子电路展开：X 实例展开、嵌套子电路递归展开
 
 待完善:

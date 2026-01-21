@@ -179,6 +179,37 @@ fn netlist_poly_is_parsed_into_spec() {
 }
 
 #[test]
+fn netlist_expression_supports_unary_minus_and_pow() {
+    let input = ".param RVAL=-1k+2k^2\nR1 in out RVAL\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    assert_eq!(elab.instances.len(), 1);
+    assert_eq!(elab.instances[0].value.as_deref(), Some("3999"));
+}
+
+#[test]
+fn netlist_voltage_source_dc_keyword() {
+    let input = "V1 in 0 DC 1.5\n.end\n";
+    let ast = parse_netlist(input);
+    let device = ast
+        .statements
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Device(dev) => Some(dev),
+            _ => None,
+        })
+        .expect("device not found");
+    assert_eq!(device.value.as_deref(), Some("1.5"));
+}
+
+#[test]
+fn netlist_poly_requires_coeffs() {
+    let input = "E1 out 0 in 0 POLY(2)\n.end\n";
+    let ast = parse_netlist(input);
+    assert!(!ast.errors.is_empty());
+}
+
+#[test]
 fn netlist_subckt_body_param_is_applied() {
     let input = ".subckt buf in out\n.param RVAL=3k\nR1 in out RVAL\n.ends\nX1 a b buf\n.end\n";
     let ast = parse_netlist(input);

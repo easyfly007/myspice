@@ -56,9 +56,10 @@ sim-cli <netlist>
 - 支持 `.include` 递归读取 (基础版)
 - 支持子电路基础展开与参数映射 (简单覆盖规则)
 - 支持基础参数表达式求值 (加减乘除与括号，支持单位后缀)
-- 受控源 E/G/F/H 支持 POLY 语法解析
+- 受控源 E/G/F/H 支持 POLY 语法解析与系数校验
 - 支持嵌套子电路基础展开
-- 支持参数表达式函数: max/min/abs/if
+- 支持参数表达式函数: max/min/abs/if，并支持一元负号与幂运算 (^)
+- 电压/电流源支持 DC 关键字取值
 - 支持子电路内部 `.param` 作用域
 
 注意:
@@ -133,6 +134,8 @@ total=50 passed=50 failed=0 passrate=100.00%
 - TRAN 电容/电感等效 stamp
 - TRAN 自适应步长与误差估计骨架
 - TRAN 非线性器件 Newton 迭代
+- ResultStore 接入与仿真结果输出
+- PSF 文本输出（基础格式）
 - TRAN 收敛失败时回退 gmin/source stepping
 - TRAN 加权误差估计
 

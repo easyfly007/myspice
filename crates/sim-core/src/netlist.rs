@@ -333,9 +333,16 @@ fn split_device_fields(
         DeviceKind::R | DeviceKind::C | DeviceKind::L | DeviceKind::V | DeviceKind::I => {
             if args.len() >= 3 {
                 nodes.extend_from_slice(&args[0..2]);
-                value = Some(args[2].clone());
-                if args.len() > 3 {
-                    extras.extend_from_slice(&args[3..]);
+                if args[2].eq_ignore_ascii_case("dc") && args.len() >= 4 {
+                    value = Some(args[3].clone());
+                    if args.len() > 4 {
+                        extras.extend_from_slice(&args[4..]);
+                    }
+                } else {
+                    value = Some(args[2].clone());
+                    if args.len() > 3 {
+                        extras.extend_from_slice(&args[3..]);
+                    }
                 }
             } else {
                 nodes.extend_from_slice(args);
@@ -521,6 +528,11 @@ fn validate_device_fields(
                         line: line_no,
                         message: format!("{} POLY 缺少系数", name),
                     });
+                } else if spec.coeffs.len() < spec.degree + 1 {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!("{} POLY 系数数量不足", name),
+                    });
                 }
             }
         }
@@ -554,6 +566,11 @@ fn validate_device_fields(
                     errors.push(ParseError {
                         line: line_no,
                         message: format!("{} POLY 缺少系数", name),
+                    });
+                } else if spec.coeffs.len() < spec.degree + 1 {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!("{} POLY 系数数量不足", name),
                     });
                 }
             }
@@ -1004,7 +1021,7 @@ fn tokenize_expr(expr: &str) -> Vec<ExprToken> {
             continue;
         }
         match ch {
-            '+' | '-' | '*' | '/' => {
+            '+' | '-' | '*' | '/' | '^' => {
                 push_buf(&mut buf, &mut tokens);
                 tokens.push(ExprToken::Op(ch));
             }
@@ -1059,6 +1076,7 @@ fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
     let mut ops: Vec<ExprToken> = Vec::new();
     let mut arg_stack: Vec<usize> = Vec::new();
     let mut idx = 0;
+    let mut prev_was_value = false;
 
     while idx < tokens.len() {
         let token = tokens[idx].clone();
@@ -1073,6 +1091,9 @@ fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
                 }
             }
             ExprToken::Op(op) => {
+                if !prev_was_value && op == '-' {
+                    output.push(ExprToken::Number(0.0));
+                }
                 while let Some(top) = ops.last() {
                     match top {
                         ExprToken::Op(top_op) if precedence(*top_op) >= precedence(op) => {
@@ -1119,6 +1140,10 @@ fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
             }
             ExprToken::Func { .. } => {}
         }
+        prev_was_value = matches!(
+            token,
+            ExprToken::Number(_) | ExprToken::Ident(_) | ExprToken::RParen
+        );
         idx += 1;
     }
 
@@ -1136,6 +1161,7 @@ fn precedence(op: char) -> u8 {
     match op {
         '+' | '-' => 1,
         '*' | '/' => 2,
+        '^' => 3,
         _ => 0,
     }
 }
@@ -1167,6 +1193,7 @@ fn eval_rpn(
                     '-' => a - b,
                     '*' => a * b,
                     '/' => a / b,
+                    '^' => a.powf(b),
                     _ => return None,
                 };
                 stack.push(value);

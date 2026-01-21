@@ -16,6 +16,8 @@ pub trait LinearSolver {
 pub struct KluSolver {
     pub n: usize,
     pub enabled: bool,
+    last_ap_len: usize,
+    last_ai_len: usize,
     #[cfg(feature = "klu")]
     symbolic: *mut klu_sys::klu_symbolic,
     #[cfg(feature = "klu")]
@@ -29,6 +31,8 @@ impl KluSolver {
         let mut solver = Self {
             n,
             enabled: cfg!(feature = "klu"),
+            last_ap_len: 0,
+            last_ai_len: 0,
             #[cfg(feature = "klu")]
             symbolic: std::ptr::null_mut(),
             #[cfg(feature = "klu")]
@@ -47,6 +51,12 @@ impl KluSolver {
         if !self.enabled {
             return Err(SolverError::AnalyzeFailed);
         }
+        if !self.symbolic.is_null()
+            && self.last_ap_len == ap.len()
+            && self.last_ai_len == ai.len()
+        {
+            return Ok(());
+        }
         #[cfg(feature = "klu")]
         unsafe {
             if !self.symbolic.is_null() {
@@ -62,6 +72,8 @@ impl KluSolver {
                 return Err(SolverError::AnalyzeFailed);
             }
         }
+        self.last_ap_len = ap.len();
+        self.last_ai_len = ai.len();
         Ok(())
     }
 
@@ -124,6 +136,8 @@ impl KluSolver {
             self.symbolic = std::ptr::null_mut();
             self.numeric = std::ptr::null_mut();
         }
+        self.last_ap_len = 0;
+        self.last_ai_len = 0;
     }
 }
 

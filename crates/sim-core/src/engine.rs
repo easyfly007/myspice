@@ -3,10 +3,10 @@ use crate::analysis::{
 };
 use crate::circuit::Circuit;
 use crate::mna::MnaBuilder;
+use crate::result_store::{AnalysisType, ResultStore, RunId, RunResult, RunStatus};
 use crate::solver::KluSolver;
 use crate::stamp::{update_transient_state, DeviceStamp, InstanceStamp, TransientState};
-use crate::newton::{debug_dump_newton, run_newton, GminSchedule, NewtonConfig, SourceSchedule};
-use crate::solver::LinearSolver;
+use crate::newton::{debug_dump_newton_with_tag, run_newton_with_stepping, NewtonConfig};
 
 #[derive(Debug, Clone)]
 pub struct Engine {
@@ -26,45 +26,63 @@ impl Engine {
         }
     }
 
+    pub fn run_with_store(&self, plan: &AnalysisPlan, store: &mut ResultStore) -> RunId {
+        let result = match plan.cmd {
+            crate::circuit::AnalysisCmd::Tran { .. } => self.run_tran_result(),
+            crate::circuit::AnalysisCmd::Dc { .. } => self.run_dc_result(AnalysisType::Dc),
+            _ => self.run_dc_result(AnalysisType::Op),
+        };
+        store.add_run(result)
+    }
+
     pub fn run_dc(&self) {
-        let config = NewtonConfig::default();
-        let node_count = self.circuit.nodes.id_to_name.len();
-        let mut x = vec![0.0; node_count];
-        let gmin_start = (config.gmin * 1e3).max(1e-6);
-        let mut gmin_sched = GminSchedule::new(config.gmin_steps, gmin_start, config.gmin);
-        let mut solver = KluSolver::new(node_count);
-
-        for _ in 0..=config.gmin_steps {
-            let gmin = gmin_sched.value();
-            let mut source_sched = SourceSchedule::new(config.source_steps);
-
-            for _ in 0..=config.source_steps {
-                let source_scale = source_sched.scale();
-                let result = run_newton(&config, &mut x, |x| {
-                    let mut mna = MnaBuilder::new(node_count);
-                    for inst in &self.circuit.instances.instances {
-                        let stamp = InstanceStamp {
-                            instance: inst.clone(),
-                        };
-                        let mut ctx = mna.context_with(gmin, source_scale);
-                        let _ = stamp.stamp_dc(&mut ctx, Some(x));
-                    }
-                    let (ap, ai, ax) = mna.builder.finalize();
-                    (ap, ai, ax, mna.rhs, mna.builder.n)
-                }, &mut solver);
-
-                debug_dump_newton(&result);
-                if result.converged {
-                    break;
-                }
-                source_sched.advance();
-            }
-
-            gmin_sched.advance();
-        }
+        let _ = self.run_dc_result(AnalysisType::Op);
     }
 
     pub fn run_tran(&self) {
+        let _ = self.run_tran_result();
+    }
+
+    fn run_dc_result(&self, analysis: AnalysisType) -> RunResult {
+        let config = NewtonConfig::default();
+        let node_count = self.circuit.nodes.id_to_name.len();
+        let mut x = vec![0.0; node_count];
+        let mut solver = KluSolver::new(node_count);
+        let result = run_newton_with_stepping(&config, &mut x, |x, gmin, source_scale| {
+            let mut mna = MnaBuilder::new(node_count);
+            for inst in &self.circuit.instances.instances {
+                let stamp = InstanceStamp {
+                    instance: inst.clone(),
+                };
+                let mut ctx = mna.context_with(gmin, source_scale);
+                let _ = stamp.stamp_dc(&mut ctx, Some(x));
+            }
+            let (ap, ai, ax) = mna.builder.finalize();
+            (ap, ai, ax, mna.rhs, mna.builder.n)
+        }, &mut solver);
+
+        debug_dump_newton_with_tag("dc", &result);
+        let status = match result.reason {
+            crate::newton::NewtonExitReason::Converged => RunStatus::Converged,
+            crate::newton::NewtonExitReason::MaxIters => RunStatus::MaxIters,
+            crate::newton::NewtonExitReason::SolverFailure => RunStatus::Failed,
+        };
+        RunResult {
+            id: RunId(0),
+            analysis,
+            status,
+            iterations: result.iterations,
+            node_names: self.circuit.nodes.id_to_name.clone(),
+            solution: if matches!(status, RunStatus::Converged) {
+                x
+            } else {
+                Vec::new()
+            },
+            message: result.message,
+        }
+    }
+
+    fn run_tran_result(&self) -> RunResult {
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
         let mut state = TransientState::default();
@@ -86,54 +104,32 @@ impl Engine {
             last_dt: config.tstep,
             accepted: true,
         };
+        let mut final_status = RunStatus::Converged;
 
         while step_state.time < config.tstop {
-            let mut converged = false;
             let mut x_iter = x.clone();
-            let gmin_start = (NewtonConfig::default().gmin * 1e3).max(1e-6);
-            let mut gmin_sched =
-                GminSchedule::new(NewtonConfig::default().gmin_steps, gmin_start, NewtonConfig::default().gmin);
-
-            for _ in 0..=NewtonConfig::default().gmin_steps {
-                let gmin = gmin_sched.value();
-                let mut source_sched = SourceSchedule::new(NewtonConfig::default().source_steps);
-
-                for _ in 0..=NewtonConfig::default().source_steps {
-                    let source_scale = source_sched.scale();
-                    let mut solver = KluSolver::new(node_count);
-                    let result = run_newton(&NewtonConfig::default(), &mut x_iter, |x| {
-                        let mut mna = MnaBuilder::new(node_count);
-                        for inst in &self.circuit.instances.instances {
-                            let stamp = InstanceStamp {
-                                instance: inst.clone(),
-                            };
-                            let mut ctx = mna.context_with(gmin, source_scale);
-                            let _ = stamp.stamp_tran(
-                                &mut ctx,
-                                Some(x),
-                                step_state.dt,
-                                &mut state,
-                            );
-                        }
-                        let (ap, ai, ax) = mna.builder.finalize();
-                        (ap, ai, ax, mna.rhs, mna.builder.n)
-                    }, &mut solver);
-
-                    if result.converged {
-                        converged = true;
-                        break;
-                    }
-                    source_sched.advance();
+            let result = run_newton_with_stepping(&NewtonConfig::default(), &mut x_iter, |x, gmin, source_scale| {
+                let mut mna = MnaBuilder::new(node_count);
+                for inst in &self.circuit.instances.instances {
+                    let stamp = InstanceStamp {
+                        instance: inst.clone(),
+                    };
+                    let mut ctx = mna.context_with(gmin, source_scale);
+                    let _ = stamp.stamp_tran(
+                        &mut ctx,
+                        Some(x),
+                        step_state.dt,
+                        &mut state,
+                    );
                 }
+                let (ap, ai, ax) = mna.builder.finalize();
+                (ap, ai, ax, mna.rhs, mna.builder.n)
+            }, &mut solver);
 
-                if converged {
-                    break;
-                }
-                gmin_sched.advance();
-            }
-
-            if !converged {
+            debug_dump_newton_with_tag("tran", &result);
+            if !result.converged {
                 step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
+                final_status = RunStatus::Failed;
                 continue;
             }
 
@@ -152,6 +148,20 @@ impl Engine {
             } else {
                 step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
             }
+        }
+
+        RunResult {
+            id: RunId(0),
+            analysis: AnalysisType::Tran,
+            status: final_status,
+            iterations: step_state.step,
+            node_names: self.circuit.nodes.id_to_name.clone(),
+            solution: if matches!(final_status, RunStatus::Converged) {
+                x
+            } else {
+                Vec::new()
+            },
+            message: None,
         }
     }
 }

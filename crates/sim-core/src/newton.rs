@@ -52,6 +52,7 @@ pub struct NewtonResult {
     pub iterations: usize,
     pub final_norm: f64,
     pub reason: NewtonExitReason,
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +76,7 @@ where
     state.damping = config.damping;
     let mut prev_dx_norm = f64::MAX;
     let mut reason = NewtonExitReason::MaxIters;
+    let mut message = None;
 
     for iter in 0..config.max_iters {
         state.iter = iter + 1;
@@ -85,6 +87,7 @@ where
             || solver.solve(&mut rhs).is_err()
         {
             reason = NewtonExitReason::SolverFailure;
+            message = Some("linear solver failed".to_string());
             break;
         }
         let x_new = rhs;
@@ -109,14 +112,76 @@ where
         iterations: state.iter,
         final_norm: state.last_norm,
         reason,
+        message,
     }
 }
 
 pub fn debug_dump_newton(result: &NewtonResult) {
     println!(
-        "newton: converged={} iters={} norm={} reason={:?}",
-        result.converged, result.iterations, result.final_norm, result.reason
+        "newton: converged={} iters={} norm={} reason={:?} msg={:?}",
+        result.converged,
+        result.iterations,
+        result.final_norm,
+        result.reason,
+        result.message
     );
+}
+
+pub fn debug_dump_newton_with_tag(tag: &str, result: &NewtonResult) {
+    println!(
+        "newton[{}]: converged={} iters={} norm={} reason={:?} msg={:?}",
+        tag,
+        result.converged,
+        result.iterations,
+        result.final_norm,
+        result.reason,
+        result.message
+    );
+}
+
+pub fn run_newton_with_stepping<FBuild, S>(
+    config: &NewtonConfig,
+    x: &mut Vec<f64>,
+    mut build: FBuild,
+    solver: &mut S,
+) -> NewtonResult
+where
+    FBuild: FnMut(&[f64], f64, f64) -> (Vec<i64>, Vec<i64>, Vec<f64>, Vec<f64>, usize),
+    S: crate::solver::LinearSolver,
+{
+    let gmin_start = (config.gmin * 1e3).max(1e-6);
+    let mut gmin_sched = GminSchedule::new(config.gmin_steps, gmin_start, config.gmin);
+    let mut last_result = NewtonResult {
+        converged: false,
+        iterations: 0,
+        final_norm: 0.0,
+        reason: NewtonExitReason::MaxIters,
+        message: None,
+    };
+
+    for _ in 0..=config.gmin_steps {
+        let gmin = gmin_sched.value();
+        let mut source_sched = SourceSchedule::new(config.source_steps);
+
+        for _ in 0..=config.source_steps {
+            let source_scale = source_sched.scale();
+            let result = run_newton(
+                config,
+                x,
+                |x| build(x, gmin, source_scale),
+                solver,
+            );
+            if result.converged {
+                return result;
+            }
+            last_result = result;
+            source_sched.advance();
+        }
+
+        gmin_sched.advance();
+    }
+
+    last_result
 }
 
 pub fn check_convergence(dx: &[f64], x: &[f64], config: &NewtonConfig) -> bool {
