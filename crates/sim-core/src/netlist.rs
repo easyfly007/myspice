@@ -1066,6 +1066,40 @@ fn has_waveform(extras: &[String]) -> bool {
     extras.iter().any(|token| is_waveform_token(token))
 }
 
+fn format_fields(
+    nodes: &[String],
+    model: &Option<String>,
+    control: &Option<String>,
+    value: &Option<String>,
+    extras: &[String],
+    poly: &Option<PolySpec>,
+) -> String {
+    let mut parts = Vec::new();
+    if !nodes.is_empty() {
+        parts.push(format!("nodes={}", nodes.join(",")));
+    }
+    if let Some(m) = model {
+        parts.push(format!("model={}", m));
+    }
+    if let Some(c) = control {
+        parts.push(format!("ctrl={}", c));
+    }
+    if let Some(v) = value {
+        parts.push(format!("value={}", v));
+    }
+    if !extras.is_empty() {
+        parts.push(format!("extras={}", extras.join(",")));
+    }
+    if let Some(spec) = poly {
+        parts.push(format!("poly=deg{} coeffs={}", spec.degree, spec.coeffs.len()));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", parts.join(" "))
+    }
+}
+
 fn parse_poly(tokens: &[String]) -> (Option<PolySpec>, Vec<String>) {
     for (idx, token) in tokens.iter().enumerate() {
         let upper = token.to_ascii_uppercase();
