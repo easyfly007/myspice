@@ -72,6 +72,7 @@ impl Engine {
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
         self.solver.prepare(node_count);
+        let gnd = self.circuit.nodes.gnd_id.0;
         let result = run_newton_with_stepping(&config, &mut x, |x, gmin, source_scale| {
             let mut mna = MnaBuilder::new(node_count);
             for inst in &self.circuit.instances.instances {
@@ -81,6 +82,8 @@ impl Engine {
                 let mut ctx = mna.context_with(gmin, source_scale);
                 let _ = stamp.stamp_dc(&mut ctx, Some(x));
             }
+            // 固定地节点，避免矩阵奇异
+            mna.builder.insert(gnd, gnd, 1.0);
             let (ap, ai, ax) = mna.builder.finalize();
             (ap, ai, ax, mna.rhs, mna.builder.n)
         }, self.solver.as_mut());
@@ -132,6 +135,7 @@ impl Engine {
 
         while step_state.time < config.tstop {
             let mut x_iter = x.clone();
+            let gnd = self.circuit.nodes.gnd_id.0;
             let result = run_newton_with_stepping(&NewtonConfig::default(), &mut x_iter, |x, gmin, source_scale| {
                 let mut mna = MnaBuilder::new(node_count);
                 for inst in &self.circuit.instances.instances {
@@ -146,6 +150,8 @@ impl Engine {
                         &mut state,
                     );
                 }
+                // 固定地节点，避免矩阵奇异
+                mna.builder.insert(gnd, gnd, 1.0);
                 let (ap, ai, ax) = mna.builder.finalize();
                 (ap, ai, ax, mna.rhs, mna.builder.n)
             }, self.solver.as_mut());

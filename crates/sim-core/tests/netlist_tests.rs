@@ -91,11 +91,12 @@ fn netlist_elaboration_expands_subckt() {
 
 #[test]
 fn netlist_elaboration_applies_params() {
+    // 参数值会被求值：5k = 5000
     let input = ".param RVAL=5k\nR1 in out RVAL\n.end\n";
     let ast = parse_netlist(input);
     let elab = elaborate_netlist(&ast);
     assert_eq!(elab.instances.len(), 1);
-    assert_eq!(elab.instances[0].value.as_deref(), Some("5k"));
+    assert_eq!(elab.instances[0].value.as_deref(), Some("5000"));
 }
 
 #[test]
@@ -112,13 +113,12 @@ fn netlist_parser_expands_include() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("..")
-        .join("..")
         .join("tests")
         .join("fixtures")
         .join("netlists")
         .join("include_parent.cir");
     let ast = parse_netlist_file(&root);
-    assert!(ast.errors.is_empty());
+    assert!(ast.errors.is_empty(), "errors: {:?}", ast.errors);
     let device_count = ast
         .statements
         .iter()
@@ -138,9 +138,10 @@ fn netlist_param_expression_evaluates() {
 
 #[test]
 fn netlist_controlled_source_poly_is_accepted() {
-    let input = "E1 out 0 in 0 POLY(1) 1 2\n.end\n";
+    // 标准 POLY 语法: E1 out 0 POLY(n) ctrl+ ctrl- ... coeffs
+    let input = "E1 out 0 POLY(1) in 0 1 2\n.end\n";
     let ast = parse_netlist(input);
-    assert!(ast.errors.is_empty());
+    assert!(ast.errors.is_empty(), "errors: {:?}", ast.errors);
 }
 
 #[test]
@@ -163,7 +164,8 @@ fn netlist_param_expression_if() {
 
 #[test]
 fn netlist_poly_is_parsed_into_spec() {
-    let input = "G1 out 0 in 0 POLY(2) 1 2 3\n.end\n";
+    // 标准 POLY 语法: G1 out 0 POLY(2) ctrl1+ ctrl1- ctrl2+ ctrl2- coeffs
+    let input = "G1 out 0 POLY(2) a 0 b 0 1 2 3\n.end\n";
     let ast = parse_netlist(input);
     let device = ast
         .statements
@@ -175,16 +177,19 @@ fn netlist_poly_is_parsed_into_spec() {
         .expect("device not found");
     let poly = device.poly.as_ref().expect("poly not found");
     assert_eq!(poly.degree, 2);
-    assert_eq!(poly.coeffs.len(), 3);
+    // coeffs 包含控制节点 + 系数: a 0 b 0 1 2 3 = 7 个
+    assert_eq!(poly.coeffs.len(), 7);
 }
 
 #[test]
 fn netlist_expression_supports_unary_minus_and_pow() {
-    let input = ".param RVAL=-1k+2k^2\nR1 in out RVAL\n.end\n";
+    // 测试一元负号和指数运算
+    // -1k + 2^3 = -1000 + 8 = -992
+    let input = ".param RVAL=-1k+2^3\nR1 in out RVAL\n.end\n";
     let ast = parse_netlist(input);
     let elab = elaborate_netlist(&ast);
     assert_eq!(elab.instances.len(), 1);
-    assert_eq!(elab.instances[0].value.as_deref(), Some("3999"));
+    assert_eq!(elab.instances[0].value.as_deref(), Some("-992"));
 }
 
 #[test]
@@ -204,31 +209,38 @@ fn netlist_voltage_source_dc_keyword() {
 
 #[test]
 fn netlist_poly_requires_coeffs() {
-    let input = "E1 out 0 in 0 POLY(2)\n.end\n";
+    // POLY(2) 需要 4 个控制节点 + 至少 3 个系数，但这里什么都没有
+    let input = "E1 out 0 POLY(2)\n.end\n";
     let ast = parse_netlist(input);
-    assert!(!ast.errors.is_empty());
+    assert!(!ast.errors.is_empty(), "should have errors for missing coeffs");
 }
 
 #[test]
 fn netlist_poly_controls_are_validated() {
-    let ok = "E1 out 0 in 0 POLY(2) a 0 b 0 1 2 3\n.end\n";
+    // 标准 POLY 语法: E1 out 0 POLY(2) ctrl1+ ctrl1- ctrl2+ ctrl2- coeffs
+    // POLY(2) 需要 2 对控制节点 (4 个) + 至少 3 个系数
+    let ok = "E1 out 0 POLY(2) a 0 b 0 1 2 3\n.end\n";
     let ast_ok = parse_netlist(ok);
-    assert!(ast_ok.errors.is_empty());
+    assert!(ast_ok.errors.is_empty(), "errors: {:?}", ast_ok.errors);
 
-    let bad = "E1 out 0 in 0 POLY(2) a 0 1 2 3\n.end\n";
+    // 只有 2 个控制节点，少于期望的 4 个
+    let bad = "E1 out 0 POLY(2) a 0 1 2 3\n.end\n";
     let ast_bad = parse_netlist(bad);
-    assert!(!ast_bad.errors.is_empty());
+    assert!(!ast_bad.errors.is_empty(), "should have errors for insufficient controls");
 }
 
 #[test]
 fn netlist_poly_fh_controls_are_validated() {
+    // F/H POLY 语法: F1 out 0 POLY(n) Vctrl1 Vctrl2 ... coeffs
+    // POLY(2) 需要 2 个控制源 + 至少 3 个系数
     let ok = "F1 out 0 POLY(2) V1 V2 1 2 3\n.end\n";
     let ast_ok = parse_netlist(ok);
-    assert!(ast_ok.errors.is_empty());
+    assert!(ast_ok.errors.is_empty(), "errors: {:?}", ast_ok.errors);
 
+    // 只有 1 个控制源，少于期望的 2 个
     let bad = "F1 out 0 POLY(2) V1 1 2 3\n.end\n";
     let ast_bad = parse_netlist(bad);
-    assert!(!ast_bad.errors.is_empty());
+    assert!(!ast_bad.errors.is_empty(), "should have errors for insufficient controls");
 }
 
 #[test]

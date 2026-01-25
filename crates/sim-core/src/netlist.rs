@@ -427,30 +427,49 @@ fn split_device_fields(
             }
         }
         DeviceKind::E | DeviceKind::G => {
-            if args.len() >= 5 {
+            // 检查是否有 POLY 语法
+            let poly_idx = args.iter().position(|a| is_poly_token(a));
+            if let Some(idx) = poly_idx {
+                // POLY 语法: E1 out 0 POLY(n) ctrl1+ ctrl1- ... coeffs
+                // 或者: E1 out 0 in 0 POLY(n) ctrl2+ ctrl2- ... coeffs
+                // 输出节点总是前 2 个
+                if args.len() >= 2 {
+                    nodes.extend_from_slice(&args[0..2]);
+                }
+                // POLY 之前的额外节点是第一组控制节点
+                if idx > 2 {
+                    extras.extend_from_slice(&args[2..idx]);
+                }
+                // POLY 及之后的内容
+                extras.extend_from_slice(&args[idx..]);
+            } else if args.len() >= 5 {
+                // 普通语法: E1 out 0 in 0 gain
                 nodes.extend_from_slice(&args[0..4]);
-                if is_poly_token(&args[4]) {
-                    extras.extend_from_slice(&args[4..]);
-                } else {
-                    value = Some(args[4].clone());
-                    if args.len() > 5 {
-                        extras.extend_from_slice(&args[5..]);
-                    }
+                value = Some(args[4].clone());
+                if args.len() > 5 {
+                    extras.extend_from_slice(&args[5..]);
                 }
             } else {
                 nodes.extend_from_slice(args);
             }
         }
         DeviceKind::F | DeviceKind::H => {
-            if args.len() >= 4 {
+            // 检查是否有 POLY 语法
+            let poly_idx = args.iter().position(|a| is_poly_token(a));
+            if let Some(idx) = poly_idx {
+                // POLY 语法: F1 out 0 POLY(n) V1 V2 ... coeffs
+                if args.len() >= 2 {
+                    nodes.extend_from_slice(&args[0..2]);
+                }
+                // POLY 及之后的内容
+                extras.extend_from_slice(&args[idx..]);
+            } else if args.len() >= 4 {
+                // 普通语法: F1 out 0 Vctrl gain
+                // control 由 extract_control_name 提取
                 nodes.extend_from_slice(&args[0..2]);
-                if is_poly_token(&args[3]) {
-                    extras.extend_from_slice(&args[3..]);
-                } else {
-                    value = Some(args[3].clone());
-                    if args.len() > 4 {
-                        extras.extend_from_slice(&args[4..]);
-                    }
+                value = Some(args[3].clone());
+                if args.len() > 4 {
+                    extras.extend_from_slice(&args[4..]);
                 }
             } else {
                 nodes.extend_from_slice(args);
@@ -628,16 +647,32 @@ fn validate_device_fields(
             }
         }
         DeviceKind::E | DeviceKind::G => {
-            if nodes.len() != 4 {
-                errors.push(ParseError {
-                    line: line_no,
-                    message: format!(
-                        "{} 需要 4 个节点，当前={} {}",
-                        name,
-                        nodes.len(),
-                        format_fields(nodes, model, control, value, extras, poly)
-                    ),
-                });
+            if poly.is_some() {
+                // POLY 语法: 输出节点 2 个
+                if nodes.len() != 2 {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!(
+                            "{} POLY 需要 2 个输出节点，当前={} {}",
+                            name,
+                            nodes.len(),
+                            format_fields(nodes, model, control, value, extras, poly)
+                        ),
+                    });
+                }
+            } else {
+                // 普通语法: 4 个节点 (out+ out- in+ in-)
+                if nodes.len() != 4 {
+                    errors.push(ParseError {
+                        line: line_no,
+                        message: format!(
+                            "{} 需要 4 个节点，当前={} {}",
+                            name,
+                            nodes.len(),
+                            format_fields(nodes, model, control, value, extras, poly)
+                        ),
+                    });
+                }
             }
             if value.is_none() && poly.is_none() {
                 errors.push(ParseError {
@@ -652,29 +687,36 @@ fn validate_device_fields(
                 });
             }
             if let Some(spec) = poly {
-                if spec.coeffs.is_empty() {
-                    errors.push(ParseError {
-                        line: line_no,
-                        message: format!("{} POLY 缺少系数 {}", name, format_fields(nodes, model, control, value, extras, poly)),
-                    });
-                } else if spec.coeffs.len() < spec.degree + 1 {
-                    errors.push(ParseError {
-                        line: line_no,
-                        message: format!("{} POLY 系数数量不足 {}", name, format_fields(nodes, model, control, value, extras, poly)),
-                    });
-                }
+                // POLY 后面的内容 (coeffs): 控制节点 + 系数
+                // 控制节点数量 = degree * 2 (每对是 v+ v-)
+                // POLY 之前的内容（如 in 0）是可选的兼容语法，不计入控制节点
                 let expected_controls = spec.degree * 2;
-                if extras.len() != expected_controls {
+                if spec.coeffs.len() < expected_controls {
                     errors.push(ParseError {
                         line: line_no,
                         message: format!(
-                            "{} POLY 控制节点数量不匹配，期望={} 实际={} {}",
+                            "{} POLY 控制节点数量不足，期望={} 实际={} {}",
                             name,
                             expected_controls,
-                            extras.len(),
+                            spec.coeffs.len(),
                             format_fields(nodes, model, control, value, extras, poly)
                         ),
                     });
+                } else {
+                    // 系数是控制节点之后的部分
+                    let actual_coeffs = spec.coeffs.len() - expected_controls;
+                    if actual_coeffs < spec.degree + 1 {
+                        errors.push(ParseError {
+                            line: line_no,
+                            message: format!(
+                                "{} POLY 系数数量不足，期望>={} 实际={} {}",
+                                name,
+                                spec.degree + 1,
+                                actual_coeffs,
+                                format_fields(nodes, model, control, value, extras, poly)
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -709,29 +751,35 @@ fn validate_device_fields(
                 });
             }
             if let Some(spec) = poly {
-                if spec.coeffs.is_empty() {
-                    errors.push(ParseError {
-                        line: line_no,
-                        message: format!("{} POLY 缺少系数 {}", name, format_fields(nodes, model, control, value, extras, poly)),
-                    });
-                } else if spec.coeffs.len() < spec.degree + 1 {
-                    errors.push(ParseError {
-                        line: line_no,
-                        message: format!("{} POLY 系数数量不足 {}", name, format_fields(nodes, model, control, value, extras, poly)),
-                    });
-                }
+                // POLY 后面的内容: 控制源名称 + 系数
+                // 控制源数量 = degree
                 let expected_controls = spec.degree;
-                if extras.len() != expected_controls {
+                if spec.coeffs.len() < expected_controls {
                     errors.push(ParseError {
                         line: line_no,
                         message: format!(
-                            "{} POLY 控制源数量不匹配，期望={} 实际={} {}",
+                            "{} POLY 控制源数量不足，期望={} 实际={} {}",
                             name,
                             expected_controls,
-                            extras.len(),
+                            spec.coeffs.len(),
                             format_fields(nodes, model, control, value, extras, poly)
                         ),
                     });
+                } else {
+                    // 系数是控制源之后的部分
+                    let actual_coeffs = spec.coeffs.len() - expected_controls;
+                    if actual_coeffs < spec.degree + 1 {
+                        errors.push(ParseError {
+                            line: line_no,
+                            message: format!(
+                                "{} POLY 系数数量不足，期望>={} 实际={} {}",
+                                name,
+                                spec.degree + 1,
+                                actual_coeffs,
+                                format_fields(nodes, model, control, value, extras, poly)
+                            ),
+                        });
+                    }
                 }
             }
         }
@@ -814,6 +862,135 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
         control_count,
         error_count: errors.len(),
     }
+}
+
+pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circuit::Circuit {
+    use crate::circuit::{AnalysisCmd, Circuit, DeviceKind as CircuitDeviceKind, Instance, Model};
+    use std::collections::HashMap;
+
+    let mut circuit = Circuit::new();
+
+    for stmt in &ast.statements {
+        if let Stmt::Control(ctrl) = stmt {
+            match ctrl.kind {
+                ControlKind::Model => {
+                    if let (Some(name), Some(model_type)) = (&ctrl.model_name, &ctrl.model_type) {
+                        let mut params = HashMap::new();
+                        for param in &ctrl.params {
+                            params.insert(param.key.to_ascii_lowercase(), param.value.clone());
+                        }
+                        circuit.models.insert(Model {
+                            name: name.clone(),
+                            model_type: model_type.clone(),
+                            params,
+                        });
+                    }
+                }
+                ControlKind::Op => {
+                    circuit.analysis.push(AnalysisCmd::Op);
+                }
+                ControlKind::Dc => {
+                    if ctrl.args.len() >= 4 {
+                        let source = ctrl.args[0].clone();
+                        let start = parse_number_with_suffix(&ctrl.args[1])
+                            .or_else(|| ctrl.args[1].parse().ok())
+                            .unwrap_or(0.0);
+                        let stop = parse_number_with_suffix(&ctrl.args[2])
+                            .or_else(|| ctrl.args[2].parse().ok())
+                            .unwrap_or(0.0);
+                        let step = parse_number_with_suffix(&ctrl.args[3])
+                            .or_else(|| ctrl.args[3].parse().ok())
+                            .unwrap_or(0.0);
+                        circuit.analysis.push(AnalysisCmd::Dc {
+                            source,
+                            start,
+                            stop,
+                            step,
+                        });
+                    }
+                }
+                ControlKind::Tran => {
+                    if ctrl.args.len() >= 2 {
+                        let tstep = parse_number_with_suffix(&ctrl.args[0])
+                            .or_else(|| ctrl.args[0].parse().ok())
+                            .unwrap_or(0.0);
+                        let tstop = parse_number_with_suffix(&ctrl.args[1])
+                            .or_else(|| ctrl.args[1].parse().ok())
+                            .unwrap_or(0.0);
+                        let tstart = ctrl
+                            .args
+                            .get(2)
+                            .and_then(|v| parse_number_with_suffix(v).or_else(|| v.parse().ok()))
+                            .unwrap_or(0.0);
+                        let tmax = ctrl
+                            .args
+                            .get(3)
+                            .and_then(|v| parse_number_with_suffix(v).or_else(|| v.parse().ok()))
+                            .unwrap_or(tstop);
+                        circuit.analysis.push(AnalysisCmd::Tran {
+                            tstep,
+                            tstop,
+                            tstart,
+                            tmax,
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    for device in &elab.instances {
+        let kind = match device.kind {
+            DeviceKind::R => Some(CircuitDeviceKind::R),
+            DeviceKind::C => Some(CircuitDeviceKind::C),
+            DeviceKind::L => Some(CircuitDeviceKind::L),
+            DeviceKind::V => Some(CircuitDeviceKind::V),
+            DeviceKind::I => Some(CircuitDeviceKind::I),
+            DeviceKind::D => Some(CircuitDeviceKind::D),
+            DeviceKind::M => Some(CircuitDeviceKind::M),
+            DeviceKind::E => Some(CircuitDeviceKind::E),
+            DeviceKind::G => Some(CircuitDeviceKind::G),
+            DeviceKind::F => Some(CircuitDeviceKind::F),
+            DeviceKind::H => Some(CircuitDeviceKind::H),
+            DeviceKind::X => Some(CircuitDeviceKind::X),
+            DeviceKind::Unknown => None,
+        };
+        let Some(kind) = kind else {
+            continue;
+        };
+
+        let nodes = device
+            .nodes
+            .iter()
+            .map(|name| circuit.nodes.ensure_node(name))
+            .collect::<Vec<_>>();
+
+        let model = device.model.as_ref().and_then(|name| {
+            circuit.models.name_to_id.get(&name.to_string()).copied()
+        });
+
+        let mut params = HashMap::new();
+        for param in &device.params {
+            params.insert(param.key.to_ascii_lowercase(), param.value.clone());
+        }
+
+        circuit.instances.insert(Instance {
+            name: device.name.clone(),
+            kind,
+            nodes,
+            model,
+            params,
+            value: device.value.clone(),
+            control: device.control.clone(),
+        });
+    }
+
+    if circuit.analysis.is_empty() {
+        circuit.analysis.push(AnalysisCmd::Op);
+    }
+
+    circuit
 }
 
 fn read_with_includes(
