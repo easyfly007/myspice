@@ -1,0 +1,27 @@
+# Set default behavior to automatically normalize line endings
+* text=auto eol=lf
+
+# Rust files
+*.rs text eol=lf
+*.toml text eol=lf
+
+# Documentation
+*.md text eol=lf
+
+# Test fixtures
+*.cir text eol=lf
+
+# Python
+*.py text eol=lf
+
+# Shell scripts
+*.sh text eol=lf
+
+# Config files
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+
+# Keep Windows line endings for Windows-specific files
+*.bat text eol=crlf
+*.cmd text eol=crlf
