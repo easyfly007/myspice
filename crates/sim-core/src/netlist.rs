@@ -302,8 +302,9 @@ fn split_args_params(tokens: &[&str]) -> (Vec<String>, Vec<Param>) {
     let mut params = Vec::new();
 
     for token in tokens {
+        // 只在括号深度为 0 时按逗号分割，避免分割表达式内的逗号
         let parts: Vec<&str> = if token.contains('=') && token.contains(',') {
-            token.split(',').collect()
+            split_at_top_level_commas(token)
         } else {
             vec![*token]
         };
@@ -337,6 +338,31 @@ fn split_args_params(tokens: &[&str]) -> (Vec<String>, Vec<Param>) {
     }
 
     (args, params)
+}
+
+/// 只在括号深度为 0 时按逗号分割字符串
+fn split_at_top_level_commas(s: &str) -> Vec<&str> {
+    let mut result = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0;
+    
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                result.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    
+    if start < s.len() {
+        result.push(&s[start..]);
+    }
+    
+    result
 }
 
 fn split_device_fields(
@@ -1055,7 +1081,8 @@ fn map_subckt_node(
     port_map: &std::collections::HashMap<String, String>,
     node: &str,
 ) -> String {
-    if let Some(mapped) = port_map.get(node) {
+    // SPICE 节点名大小写不敏感，使用小写查找
+    if let Some(mapped) = port_map.get(&node.to_ascii_lowercase()) {
         return mapped.clone();
     }
     format!("{}:{}", instance.name, node)
@@ -1266,28 +1293,28 @@ fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {
     while idx < tokens.len() {
         let token = tokens[idx].clone();
         let next = tokens.get(idx + 1);
-        match token {
-            ExprToken::Number(_) => output.push(token),
+        match &token {
+            ExprToken::Number(_) => output.push(token.clone()),
             ExprToken::Ident(name) => {
                 if matches!(next, Some(ExprToken::LParen)) {
-                    ops.push(ExprToken::Func { name, argc: 0 });
+                    ops.push(ExprToken::Func { name: name.clone(), argc: 0 });
                 } else {
-                    output.push(ExprToken::Ident(name));
+                    output.push(ExprToken::Ident(name.clone()));
                 }
             }
             ExprToken::Op(op) => {
-                if !prev_was_value && op == '-' {
+                if !prev_was_value && *op == '-' {
                     output.push(ExprToken::Number(0.0));
                 }
                 while let Some(top) = ops.last() {
                     match top {
-                        ExprToken::Op(top_op) if precedence(*top_op) >= precedence(op) => {
+                        ExprToken::Op(top_op) if precedence(*top_op) >= precedence(*op) => {
                             output.push(ops.pop().unwrap());
                         }
                         _ => break,
                     }
                 }
-                ops.push(ExprToken::Op(op));
+                ops.push(ExprToken::Op(*op));
             }
             ExprToken::Comma => {
                 while let Some(top) = ops.last() {
@@ -1459,6 +1486,12 @@ fn expand_subckt_instance_recursive(
         nested_map.entry(name.clone()).or_insert_with(|| def.clone());
     }
 
+    // 构建端口映射：子电路端口 -> 实例节点
+    let mut port_map = std::collections::HashMap::new();
+    for (port, node) in def.ports.iter().zip(instance.nodes.iter()) {
+        port_map.insert(port.to_ascii_lowercase(), node.clone());
+    }
+
     let mut expanded = Vec::new();
     for stmt in body {
         match stmt {
@@ -1468,7 +1501,7 @@ fn expand_subckt_instance_recursive(
                 scoped.nodes = dev
                     .nodes
                     .iter()
-                    .map(|node| map_subckt_node(instance, local_params, node))
+                    .map(|node| map_subckt_node(instance, &port_map, node))
                     .collect();
                 if matches!(scoped.kind, DeviceKind::X) {
                     if let Some(subckt_name) = scoped.model.as_deref() {
@@ -1508,15 +1541,4 @@ fn expand_subckt_instance_recursive(
     }
 
     expanded
-}
-
-fn map_subckt_node(
-    instance: &DeviceStmt,
-    local_params: &std::collections::HashMap<String, String>,
-    node: &str,
-) -> String {
-    if let Some(mapped) = local_params.get(&node.to_ascii_lowercase()) {
-        return mapped.clone();
-    }
-    format!("{}:{}", instance.name, node)
 }

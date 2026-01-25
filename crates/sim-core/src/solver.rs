@@ -250,8 +250,11 @@ impl KluSolver {
         if !self.enabled {
             return Err(SolverError::AnalyzeFailed);
         }
-        if !self.symbolic.is_null() && self.last_ap == ap && self.last_ai == ai {
-            return Ok(());
+        #[cfg(feature = "klu")]
+        {
+            if !self.symbolic.is_null() && self.last_ap == ap && self.last_ai == ai {
+                return Ok(());
+            }
         }
         #[cfg(feature = "klu")]
         unsafe {
