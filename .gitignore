@@ -25,6 +25,9 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+*.swp
+*.swo
+*~
 
 # Project-specific caches
 spice-datasets/.cache/
