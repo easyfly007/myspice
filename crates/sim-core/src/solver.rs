@@ -245,8 +245,17 @@ impl KluSolver {
         }
         solver
     }
+}
 
-    pub fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError> {
+impl LinearSolver for KluSolver {
+    fn prepare(&mut self, n: usize) {
+        if n != self.n {
+            self.reset_pattern();
+        }
+        self.n = n;
+    }
+
+    fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError> {
         if !self.enabled {
             return Err(SolverError::AnalyzeFailed);
         }
@@ -276,7 +285,7 @@ impl KluSolver {
         Ok(())
     }
 
-    pub fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
+    fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
         if !self.enabled {
             return Err(SolverError::FactorFailed);
         }
@@ -299,7 +308,7 @@ impl KluSolver {
         Ok(())
     }
 
-    pub fn solve(&mut self, _rhs: &mut [f64]) -> Result<(), SolverError> {
+    fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
         if !self.enabled {
             return Err(SolverError::SolveFailed);
         }
@@ -310,7 +319,7 @@ impl KluSolver {
                 self.numeric,
                 self.n as i32,
                 1,
-                _rhs.as_mut_ptr(),
+                rhs.as_mut_ptr(),
                 &mut self.common,
             );
             if ok == 0 {
@@ -320,7 +329,7 @@ impl KluSolver {
         Ok(())
     }
 
-    pub fn reset_pattern(&mut self) {
+    fn reset_pattern(&mut self) {
         if !self.enabled {
             return;
         }
@@ -337,31 +346,6 @@ impl KluSolver {
         }
         self.last_ap.clear();
         self.last_ai.clear();
-    }
-}
-
-impl LinearSolver for KluSolver {
-    fn prepare(&mut self, n: usize) {
-        if n != self.n {
-            self.reset_pattern();
-        }
-        self.n = n;
-    }
-
-    fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError> {
-        KluSolver::analyze(self, ap, ai)
-    }
-
-    fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
-        KluSolver::factor(self, ap, ai, ax)
-    }
-
-    fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
-        KluSolver::solve(self, rhs)
-    }
-
-    fn reset_pattern(&mut self) {
-        KluSolver::reset_pattern(self)
     }
 }
 

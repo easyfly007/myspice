@@ -4,21 +4,32 @@ use crate::analysis::{
 use crate::circuit::Circuit;
 use crate::mna::MnaBuilder;
 use crate::result_store::{AnalysisType, ResultStore, RunId, RunResult, RunStatus};
-use crate::solver::DefaultSolver;
+use crate::solver::{DefaultSolver, LinearSolver};
 use crate::stamp::{update_transient_state, DeviceStamp, InstanceStamp, TransientState};
 use crate::newton::{debug_dump_newton_with_tag, run_newton_with_stepping, NewtonConfig};
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Engine {
     pub circuit: Circuit,
+    solver: DefaultSolver,
 }
 
 impl Engine {
     pub fn new(circuit: Circuit) -> Self {
-        Self { circuit }
+        let node_count = circuit.nodes.id_to_name.len();
+        Self {
+            circuit,
+            solver: DefaultSolver::new(node_count),
+        }
     }
 
-    pub fn run(&self, plan: &AnalysisPlan) {
+    /// 当电路大小变化时，重新初始化 solver
+    pub fn resize_solver(&mut self) {
+        let node_count = self.circuit.nodes.id_to_name.len();
+        self.solver = DefaultSolver::new(node_count);
+    }
+
+    pub fn run(&mut self, plan: &AnalysisPlan) {
         println!("engine: run {:?}", plan.cmd);
         match plan.cmd {
             crate::circuit::AnalysisCmd::Tran { .. } => self.run_tran(),
@@ -26,7 +37,7 @@ impl Engine {
         }
     }
 
-    pub fn run_with_store(&self, plan: &AnalysisPlan, store: &mut ResultStore) -> RunId {
+    pub fn run_with_store(&mut self, plan: &AnalysisPlan, store: &mut ResultStore) -> RunId {
         let result = match plan.cmd {
             crate::circuit::AnalysisCmd::Tran { .. } => self.run_tran_result(),
             crate::circuit::AnalysisCmd::Dc { .. } => self.run_dc_result(AnalysisType::Dc),
@@ -35,19 +46,19 @@ impl Engine {
         store.add_run(result)
     }
 
-    pub fn run_dc(&self) {
+    pub fn run_dc(&mut self) {
         let _ = self.run_dc_result(AnalysisType::Op);
     }
 
-    pub fn run_tran(&self) {
+    pub fn run_tran(&mut self) {
         let _ = self.run_tran_result();
     }
 
-    fn run_dc_result(&self, analysis: AnalysisType) -> RunResult {
+    fn run_dc_result(&mut self, analysis: AnalysisType) -> RunResult {
         let config = NewtonConfig::default();
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
-        let mut solver = DefaultSolver::new(node_count);
+        self.solver.prepare(node_count);
         let result = run_newton_with_stepping(&config, &mut x, |x, gmin, source_scale| {
             let mut mna = MnaBuilder::new(node_count);
             for inst in &self.circuit.instances.instances {
@@ -59,7 +70,7 @@ impl Engine {
             }
             let (ap, ai, ax) = mna.builder.finalize();
             (ap, ai, ax, mna.rhs, mna.builder.n)
-        }, &mut solver);
+        }, &mut self.solver);
 
         debug_dump_newton_with_tag("dc", &result);
         let status = match result.reason {
@@ -82,11 +93,11 @@ impl Engine {
         }
     }
 
-    fn run_tran_result(&self) -> RunResult {
+    fn run_tran_result(&mut self) -> RunResult {
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
         let mut state = TransientState::default();
-        let mut solver = DefaultSolver::new(node_count);
+        self.solver.prepare(node_count);
         let config = TimeStepConfig {
             tstep: 1e-6,
             tstop: 1e-5,
@@ -124,7 +135,7 @@ impl Engine {
                 }
                 let (ap, ai, ax) = mna.builder.finalize();
                 (ap, ai, ax, mna.rhs, mna.builder.n)
-            }, &mut solver);
+            }, &mut self.solver);
 
             debug_dump_newton_with_tag("tran", &result);
             if !result.converged {
