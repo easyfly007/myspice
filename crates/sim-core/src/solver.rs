@@ -5,12 +5,38 @@ pub enum SolverError {
     SolveFailed,
 }
 
+/// 求解器类型选择
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SolverType {
+    #[default]
+    Dense,
+    Klu,
+}
+
 pub trait LinearSolver {
     fn prepare(&mut self, n: usize);
     fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError>;
     fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError>;
     fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError>;
     fn reset_pattern(&mut self);
+}
+
+/// 根据 SolverType 创建对应的求解器
+pub fn create_solver(solver_type: SolverType, n: usize) -> Box<dyn LinearSolver> {
+    match solver_type {
+        SolverType::Dense => Box::new(DenseSolver::new(n)),
+        SolverType::Klu => {
+            #[cfg(feature = "klu")]
+            {
+                Box::new(KluSolver::new(n))
+            }
+            #[cfg(not(feature = "klu"))]
+            {
+                eprintln!("Warning: KLU not available, falling back to Dense solver");
+                Box::new(DenseSolver::new(n))
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -138,78 +164,6 @@ impl LinearSolver for DenseSolver {
     }
 
     fn reset_pattern(&mut self) {}
-}
-
-#[derive(Debug)]
-pub struct DefaultSolver {
-    inner: SolverImpl,
-}
-
-#[derive(Debug)]
-enum SolverImpl {
-    #[cfg(feature = "klu")]
-    Klu(KluSolver),
-    Dense(DenseSolver),
-}
-
-impl DefaultSolver {
-    pub fn new(n: usize) -> Self {
-        let inner = if cfg!(feature = "klu") {
-            #[cfg(feature = "klu")]
-            {
-                SolverImpl::Klu(KluSolver::new(n))
-            }
-            #[cfg(not(feature = "klu"))]
-            {
-                SolverImpl::Dense(DenseSolver::new(n))
-            }
-        } else {
-            SolverImpl::Dense(DenseSolver::new(n))
-        };
-        Self { inner }
-    }
-}
-
-impl LinearSolver for DefaultSolver {
-    fn prepare(&mut self, n: usize) {
-        match &mut self.inner {
-            #[cfg(feature = "klu")]
-            SolverImpl::Klu(solver) => solver.prepare(n),
-            SolverImpl::Dense(solver) => solver.prepare(n),
-        }
-    }
-
-    fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError> {
-        match &mut self.inner {
-            #[cfg(feature = "klu")]
-            SolverImpl::Klu(solver) => solver.analyze(ap, ai),
-            SolverImpl::Dense(solver) => solver.analyze(ap, ai),
-        }
-    }
-
-    fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
-        match &mut self.inner {
-            #[cfg(feature = "klu")]
-            SolverImpl::Klu(solver) => solver.factor(ap, ai, ax),
-            SolverImpl::Dense(solver) => solver.factor(ap, ai, ax),
-        }
-    }
-
-    fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
-        match &mut self.inner {
-            #[cfg(feature = "klu")]
-            SolverImpl::Klu(solver) => solver.solve(rhs),
-            SolverImpl::Dense(solver) => solver.solve(rhs),
-        }
-    }
-
-    fn reset_pattern(&mut self) {
-        match &mut self.inner {
-            #[cfg(feature = "klu")]
-            SolverImpl::Klu(solver) => solver.reset_pattern(),
-            SolverImpl::Dense(solver) => solver.reset_pattern(),
-        }
-    }
 }
 
 pub struct KluSolver {

@@ -70,7 +70,7 @@ pub fn run_newton<FBuild, S>(
 ) -> NewtonResult
 where
     FBuild: FnMut(&[f64]) -> (Vec<i64>, Vec<i64>, Vec<f64>, Vec<f64>, usize),
-    S: crate::solver::LinearSolver,
+    S: crate::solver::LinearSolver + ?Sized,
 {
     let mut state = NewtonState::new();
     state.damping = config.damping;
@@ -147,7 +147,7 @@ pub fn run_newton_with_stepping<FBuild, S>(
 ) -> NewtonResult
 where
     FBuild: FnMut(&[f64], f64, f64) -> (Vec<i64>, Vec<i64>, Vec<f64>, Vec<f64>, usize),
-    S: crate::solver::LinearSolver,
+    S: crate::solver::LinearSolver + ?Sized,
 {
     let gmin_start = (config.gmin * 1e3).max(1e-6);
     let mut gmin_sched = GminSchedule::new(config.gmin_steps, gmin_start, config.gmin);

@@ -4,29 +4,42 @@ use crate::analysis::{
 use crate::circuit::Circuit;
 use crate::mna::MnaBuilder;
 use crate::result_store::{AnalysisType, ResultStore, RunId, RunResult, RunStatus};
-use crate::solver::{DefaultSolver, LinearSolver};
+use crate::solver::{create_solver, LinearSolver, SolverType};
 use crate::stamp::{update_transient_state, DeviceStamp, InstanceStamp, TransientState};
 use crate::newton::{debug_dump_newton_with_tag, run_newton_with_stepping, NewtonConfig};
 
-#[derive(Debug)]
 pub struct Engine {
     pub circuit: Circuit,
-    solver: DefaultSolver,
+    solver: Box<dyn LinearSolver>,
+    solver_type: SolverType,
 }
 
 impl Engine {
-    pub fn new(circuit: Circuit) -> Self {
+    /// 使用指定的求解器类型创建 Engine
+    pub fn new(circuit: Circuit, solver_type: SolverType) -> Self {
         let node_count = circuit.nodes.id_to_name.len();
         Self {
             circuit,
-            solver: DefaultSolver::new(node_count),
+            solver: create_solver(solver_type, node_count),
+            solver_type,
         }
+    }
+
+    /// 使用默认求解器（Dense）创建 Engine
+    pub fn new_default(circuit: Circuit) -> Self {
+        Self::new(circuit, SolverType::default())
     }
 
     /// 当电路大小变化时，重新初始化 solver
     pub fn resize_solver(&mut self) {
         let node_count = self.circuit.nodes.id_to_name.len();
-        self.solver = DefaultSolver::new(node_count);
+        self.solver = create_solver(self.solver_type, node_count);
+    }
+
+    /// 切换求解器类型
+    pub fn set_solver_type(&mut self, solver_type: SolverType) {
+        self.solver_type = solver_type;
+        self.resize_solver();
     }
 
     pub fn run(&mut self, plan: &AnalysisPlan) {
@@ -70,7 +83,7 @@ impl Engine {
             }
             let (ap, ai, ax) = mna.builder.finalize();
             (ap, ai, ax, mna.rhs, mna.builder.n)
-        }, &mut self.solver);
+        }, self.solver.as_mut());
 
         debug_dump_newton_with_tag("dc", &result);
         let status = match result.reason {
@@ -135,7 +148,7 @@ impl Engine {
                 }
                 let (ap, ai, ax) = mna.builder.finalize();
                 (ap, ai, ax, mna.rhs, mna.builder.n)
-            }, &mut self.solver);
+            }, self.solver.as_mut());
 
             debug_dump_newton_with_tag("tran", &result);
             if !result.converged {
