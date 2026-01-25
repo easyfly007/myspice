@@ -1,6 +1,11 @@
 use std::env;
-use std::fs;
 use std::path::Path;
+
+use sim_core::analysis::AnalysisPlan;
+use sim_core::circuit::AnalysisCmd;
+use sim_core::engine::Engine;
+use sim_core::netlist::{build_circuit, elaborate_netlist, parse_netlist_file};
+use sim_core::result_store::{ResultStore, RunStatus};
 
 fn main() {
     let mut args = env::args().skip(1);
@@ -15,35 +20,41 @@ fn main() {
         std::process::exit(2);
     }
 
-    let content = fs::read_to_string(path).unwrap_or_default();
-    let mut has_end = false;
-    let mut commands = Vec::new();
-
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('*') {
-            continue;
+    let ast = parse_netlist_file(path);
+    if !ast.errors.is_empty() {
+        eprintln!("netlist parse errors:");
+        for err in &ast.errors {
+            eprintln!("  line {}: {}", err.line, err.message);
         }
-        if line.starts_with('+') {
-            continue;
-        }
-        if line.starts_with('.') {
-            let cmd = line.split_whitespace().next().unwrap_or("");
-            commands.push(cmd.to_ascii_lowercase());
-            if cmd.eq_ignore_ascii_case(".end") {
-                has_end = true;
-            }
-        }
-    }
-
-    if !has_end {
-        eprintln!("netlist missing .end: {}", netlist_path);
         std::process::exit(2);
     }
 
-    println!(
-        "parsed netlist: {} commands={}",
-        netlist_path,
-        commands.len()
-    );
+    let elab = elaborate_netlist(&ast);
+    if elab.error_count > 0 {
+        eprintln!("netlist elaboration errors: {}", elab.error_count);
+        std::process::exit(2);
+    }
+
+    let circuit = build_circuit(&ast, &elab);
+    let plan_cmd = circuit
+        .analysis
+        .first()
+        .cloned()
+        .unwrap_or(AnalysisCmd::Op);
+    let plan = AnalysisPlan { cmd: plan_cmd };
+    let mut engine = Engine::new_default(circuit);
+    let mut store = ResultStore::new();
+    let run_id = engine.run_with_store(&plan, &mut store);
+    let run = &store.runs[run_id.0];
+
+    if !matches!(run.status, RunStatus::Converged) {
+        eprintln!("run failed: status={:?} message={:?}", run.status, run.message);
+        std::process::exit(1);
+    }
+
+    println!("run status: {:?} iterations={}", run.status, run.iterations);
+    for (idx, name) in run.node_names.iter().enumerate() {
+        let value = run.solution.get(idx).copied().unwrap_or(0.0);
+        println!("V({}) = {}", name, value);
+    }
 }

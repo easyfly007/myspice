@@ -5,3 +5,4 @@ edition = "2021"
 
 [dependencies]
 sim-api = { path = "../sim-api" }
+sim-core = { path = "../sim-core" }
