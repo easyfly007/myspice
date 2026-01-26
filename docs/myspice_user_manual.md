@@ -57,6 +57,44 @@ curl -X POST http://127.0.0.1:3000/v1/run/op \
   -d "{\"path\":\"tests/fixtures/netlists/basic_dc.cir\"}"
 ```
 
+触发 DC 扫描:
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/dc \
+  -H "Content-Type: application/json" \
+  -d "{\"path\":\"tests/fixtures/netlists/basic_dc.cir\",\"source\":\"V1\",\"start\":0,\"stop\":1,\"step\":0.1}"
+```
+
+触发 TRAN 分析:
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/tran \
+  -H "Content-Type: application/json" \
+  -d "{\"netlist\":\"V1 in 0 DC 1\\nR1 in 0 1k\\n.tran 1e-6 1e-5\\n.end\\n\"}"
+```
+
+查询运行结果:
+
+```
+curl http://127.0.0.1:3000/v1/runs
+curl http://127.0.0.1:3000/v1/runs/0
+```
+
+导出 PSF 文本:
+
+```
+curl -X POST http://127.0.0.1:3000/v1/runs/0/export \
+  -H "Content-Type: application/json" \
+  -d "{\"path\":\"/tmp/run0.psf\"}"
+```
+
+查询电路结构:
+
+```
+curl http://127.0.0.1:3000/v1/summary
+curl http://127.0.0.1:3000/v1/nodes
+```
+
 ---
 
 ## 2. 命令行模式 (Binary Mode)

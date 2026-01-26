@@ -275,6 +275,50 @@ curl -X POST http://127.0.0.1:3000/v1/run/op \
 - `path` 只能访问当前工作目录内的文件（建议在仓库根目录启动服务）
 - 返回结果包含 `run_id`、节点名与电压数组
 
+### 6) 触发 DC 扫描
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/dc \
+  -H "Content-Type: application/json" \
+  -d "{\"netlist\":\".param V=0\\nV1 in 0 DC 0\\nR1 in 0 1k\\n.dc V1 0 1 0.1\\n.end\\n\"}"
+```
+
+也可以显式传入扫描参数:
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/dc \
+  -H "Content-Type: application/json" \
+  -d "{\"path\":\"tests/fixtures/netlists/basic_dc.cir\",\"source\":\"V1\",\"start\":0,\"stop\":1,\"step\":0.1}"
+```
+
+### 7) 触发 TRAN 分析
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/tran \
+  -H "Content-Type: application/json" \
+  -d "{\"netlist\":\"V1 in 0 DC 1\\nR1 in 0 1k\\n.tran 1e-6 1e-5\\n.end\\n\"}"
+```
+
+### 8) 查询运行记录与导出 PSF
+
+```
+curl http://127.0.0.1:3000/v1/runs
+curl http://127.0.0.1:3000/v1/runs/0
+```
+
+```
+curl -X POST http://127.0.0.1:3000/v1/runs/0/export \
+  -H "Content-Type: application/json" \
+  -d "{\"path\":\"/tmp/run0.psf\"}"
+```
+
+### 9) 查询电路结构
+
+```
+curl http://127.0.0.1:3000/v1/summary
+curl http://127.0.0.1:3000/v1/nodes
+```
+
 ## AI 交互与 CLI
 
 交互式界面优先做 CLI，并由 AI 代理决定是否调用仿真器 API。推荐方案:
