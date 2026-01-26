@@ -35,6 +35,16 @@ sim-cli example.cir
 sim-cli example.cir --psf /tmp/example.psf
 ```
 
+指定分析类型（OP / DC）:
+
+```
+sim-cli example.cir --analysis op
+```
+
+```
+sim-cli example.cir --analysis dc --dc-source V1 --dc-start 0 --dc-stop 1 --dc-step 0.1
+```
+
 ### 1.3 启动 API 服务
 
 ```

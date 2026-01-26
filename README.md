@@ -249,6 +249,17 @@ V(out) = 0.6666666667
 cargo run -p sim-cli -- tests/fixtures/netlists/basic_dc.cir --psf /tmp/basic_dc.psf
 ```
 
+### 2.1) CLI 指定分析类型
+
+```
+cargo run -p sim-cli -- tests/fixtures/netlists/basic_dc.cir --analysis op
+```
+
+```
+cargo run -p sim-cli -- tests/fixtures/netlists/basic_dc.cir --analysis dc \
+  --dc-source V1 --dc-start 0 --dc-stop 1 --dc-step 0.1
+```
+
 ### 3) 启动 API 服务
 
 ```
