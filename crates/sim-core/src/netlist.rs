@@ -974,6 +974,11 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
         });
 
         let mut params = HashMap::new();
+        if let Some(model_id) = model {
+            if let Some(model_def) = circuit.models.models.get(model_id.0) {
+                params.extend(model_def.params.clone());
+            }
+        }
         for param in &device.params {
             params.insert(param.key.to_ascii_lowercase(), param.value.clone());
         }

@@ -121,12 +121,13 @@ fn stamp_diode(
     let a = inst.nodes[0].0;
     let b = inst.nodes[1].0;
     let gmin = if ctx.gmin > 0.0 { ctx.gmin } else { 1e-12 };
+    let isat = param_value(&inst.params, &["is"]).unwrap_or(1e-14);
+    let emission = param_value(&inst.params, &["n", "nj"]).unwrap_or(1.0);
+    let vt = 0.02585 * emission;
     if let Some(x) = x {
         let va = x.get(a).copied().unwrap_or(0.0);
         let vb = x.get(b).copied().unwrap_or(0.0);
         let vd = va - vb;
-        let isat = 1e-14;
-        let vt = 0.02585;
         let exp_vd = (vd / vt).exp();
         let id = isat * (exp_vd - 1.0);
         let gd = (isat / vt) * exp_vd;
@@ -155,15 +156,15 @@ fn stamp_mos(ctx: &mut StampContext, inst: &Instance, x: Option<&[f64]>) -> Resu
     let gate = inst.nodes[1].0;
     let source = inst.nodes[2].0;
     let gmin = if ctx.gmin > 0.0 { ctx.gmin } else { 1e-12 };
+    let vth = param_value(&inst.params, &["vth", "vto"]).unwrap_or(1.0);
+    let beta = param_value(&inst.params, &["beta", "kp"]).unwrap_or(1e-3);
+    let lambda = param_value(&inst.params, &["lambda"]).unwrap_or(0.0);
     if let Some(x) = x {
         let vd = x.get(drain).copied().unwrap_or(0.0);
         let vg = x.get(gate).copied().unwrap_or(0.0);
         let vs = x.get(source).copied().unwrap_or(0.0);
         let vgs = vg - vs;
         let vds = vd - vs;
-        let vth = 1.0;
-        let beta = 1e-3;
-        let lambda = 0.0;
         let (id, gm, gds) = if vgs <= vth {
             (0.0, 0.0, gmin)
         } else if vds < vgs - vth {
@@ -263,6 +264,18 @@ fn parse_number_with_suffix(token: &str) -> Option<f64> {
     } else {
         None
     }
+}
+
+fn param_value(params: &HashMap<String, String>, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        let key = key.to_ascii_lowercase();
+        if let Some(value) = params.get(&key) {
+            if let Some(num) = parse_number_with_suffix(value).or_else(|| value.parse().ok()) {
+                return Some(num);
+            }
+        }
+    }
+    None
 }
 
 fn stamp_capacitor_tran(

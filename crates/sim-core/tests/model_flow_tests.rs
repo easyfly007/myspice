@@ -19,4 +19,5 @@ fn model_flow_maps_instance_to_model() {
     assert_eq!(model.name, "dio");
     assert_eq!(model.model_type, "d");
     assert!(model.params.contains_key("is"));
+    assert!(circuit.instances.instances[0].params.contains_key("is"));
 }

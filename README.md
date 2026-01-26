@@ -167,7 +167,7 @@ pub trait DeviceStamp {
 | 网表解析 | ✅ 完成 | 支持子电路、参数替换、include、表达式求值 |
 | DC 仿真 | ✅ 完成 | Newton 迭代 + gmin/source stepping |
 | TRAN 仿真 | ✅ 完成 | 自适应步长、加权误差估计 |
-| 器件模型 | ✅ 基础完成 | R/C/L/V/I/D/MOS 的 stamp 实现 |
+| 器件模型 | ✅ 基础完成 | R/C/L/V/I/D/MOS 的 stamp 实现（支持 .model 基础参数） |
 | 求解器 | ✅ 完成 | DenseSolver 实现，KLU 接口可选 |
 | 结果输出 | ✅ 完成 | PSF 文本格式 |
 | API 服务 | 🔄 最小可用 | 已支持 OP 运行与结果查询 |
@@ -352,6 +352,7 @@ AI 代理通过工具调用协议访问 API，获取电路与仿真结果信息�
 - 子电路: `.subckt` / X 实例化
 - 表达式: `+ - * / ^ ( )` 与函数 `max/min/abs/if`
 - 受控源: E/G/F/H 基础 POLY 语法
+- .model: 模型定义解析与实例绑定（D/M 读取基础参数）
 
 ### 暂不支持
 
