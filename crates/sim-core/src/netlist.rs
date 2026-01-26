@@ -879,9 +879,11 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
                         for param in &ctrl.params {
                             params.insert(param.key.to_ascii_lowercase(), param.value.clone());
                         }
+                        let name_norm = name.to_ascii_lowercase();
+                        let model_type_norm = model_type.to_ascii_lowercase();
                         circuit.models.insert(Model {
-                            name: name.clone(),
-                            model_type: model_type.clone(),
+                            name: name_norm,
+                            model_type: model_type_norm,
                             params,
                         });
                     }
@@ -967,7 +969,8 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
             .collect::<Vec<_>>();
 
         let model = device.model.as_ref().and_then(|name| {
-            circuit.models.name_to_id.get(&name.to_string()).copied()
+            let key = name.to_ascii_lowercase();
+            circuit.models.name_to_id.get(&key).copied()
         });
 
         let mut params = HashMap::new();
