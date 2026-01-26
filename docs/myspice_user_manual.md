@@ -27,7 +27,35 @@ R2 out 0 2k
 sim-cli example.cir
 ```
 
-运行成功会打印解析信息。后续版本将输出实际仿真结果。
+运行成功会输出节点电压（OP 结果）。
+
+如需输出 PSF 文本:
+
+```
+sim-cli example.cir --psf /tmp/example.psf
+```
+
+### 1.3 启动 API 服务
+
+```
+cargo run -p sim-api -- --addr 127.0.0.1:3000
+```
+
+使用 netlist 字符串触发 OP:
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/op \
+  -H "Content-Type: application/json" \
+  -d "{\"netlist\":\"V1 in 0 DC 1\\nR1 in out 1k\\nR2 out 0 2k\\n.op\\n.end\\n\"}"
+```
+
+使用文件路径触发 OP（相对路径相对于服务启动目录）:
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/op \
+  -H "Content-Type: application/json" \
+  -d "{\"path\":\"tests/fixtures/netlists/basic_dc.cir\"}"
+```
 
 ---
 
@@ -44,7 +72,7 @@ sim-cli <netlist>
 
 ### 2.3 当前解析能力说明
 
-当前 parser 为 skeleton 版本，具备以下能力:
+当前 parser 已具备以下能力:
 
 - 行级解析与续行拼接
 - 识别注释行与空行
@@ -90,11 +118,11 @@ total=50 passed=50 failed=0 passrate=100.00%
 
 ## 3. 仿真结果查看
 
-当前阶段已支持基础求解输出（默认 Dense，KLU 可选）。未来输出将支持:
+当前阶段已支持 OP 结果输出与 PSF 文本导出（默认 Dense，KLU 可选）。未来输出将支持:
 
 - OP/DC/TRAN 的节点电压与器件电流
 - 波形数据查询与导出
-- PSF 文本格式输出
+- 更完整的 PSF 文本格式输出
 
 ### 3.1 结果解读建议 (未来支持)
 

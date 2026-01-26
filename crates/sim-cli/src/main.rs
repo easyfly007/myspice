@@ -1,5 +1,5 @@
 use std::env;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sim_core::analysis::AnalysisPlan;
 use sim_core::circuit::AnalysisCmd;
@@ -8,9 +8,35 @@ use sim_core::netlist::{build_circuit, elaborate_netlist, parse_netlist_file};
 use sim_core::result_store::{ResultStore, RunStatus};
 
 fn main() {
-    let mut args = env::args().skip(1);
-    let Some(netlist_path) = args.next() else {
-        eprintln!("usage: sim-cli <netlist>");
+    let mut args = env::args().skip(1).peekable();
+    let mut netlist_path: Option<String> = None;
+    let mut psf_path: Option<PathBuf> = None;
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--psf" | "-o" => {
+                let Some(path) = args.next() else {
+                    eprintln!("missing value for {}", arg);
+                    std::process::exit(2);
+                };
+                psf_path = Some(PathBuf::from(path));
+            }
+            _ => {
+                if netlist_path.is_none() {
+                    netlist_path = Some(arg);
+                } else if psf_path.is_none() {
+                    // 兼容：第二个非参数当作输出路径
+                    psf_path = Some(PathBuf::from(arg));
+                } else {
+                    eprintln!("unexpected argument: {}", arg);
+                    std::process::exit(2);
+                }
+            }
+        }
+    }
+
+    let Some(netlist_path) = netlist_path else {
+        eprintln!("usage: sim-cli <netlist> [--psf <path>]");
         std::process::exit(2);
     };
 
@@ -56,5 +82,13 @@ fn main() {
     for (idx, name) in run.node_names.iter().enumerate() {
         let value = run.solution.get(idx).copied().unwrap_or(0.0);
         println!("V({}) = {}", name, value);
+    }
+
+    if let Some(path) = psf_path {
+        if let Err(err) = store.write_psf_text(run_id, &path) {
+            eprintln!("failed to write psf: {}", err);
+            std::process::exit(1);
+        }
+        println!("psf written: {}", path.display());
     }
 }

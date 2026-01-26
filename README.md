@@ -170,8 +170,8 @@ pub trait DeviceStamp {
 | 器件模型 | ✅ 基础完成 | R/C/L/V/I/D/MOS 的 stamp 实现 |
 | 求解器 | ✅ 完成 | DenseSolver 实现，KLU 接口可选 |
 | 结果输出 | ✅ 完成 | PSF 文本格式 |
-| API 服务 | ⏳ 占位 | 待实现 HTTP 端点 |
-| CLI | ⏳ 基础 | 仅网表解析入口 |
+| API 服务 | 🔄 最小可用 | 已支持 OP 运行与结果查询 |
+| CLI | 🔄 基础可用 | 可运行 OP 并输出 PSF 文本 |
 
 ### 待完善功能
 
@@ -225,6 +225,55 @@ Parsed -> Elaborated -> Ready -> Running -> Completed
 - GET /v1/runs/{run_id}/dc
 - GET /v1/runs/{run_id}/tran
 - POST /v1/runs/{run_id}/export
+
+## 操作指南
+
+### 1) 运行 CLI（最小 OP 示例）
+
+```
+cargo run -p sim-cli -- tests/fixtures/netlists/basic_dc.cir
+```
+
+输出示例（节点电压）:
+
+```
+run status: Converged iterations=2
+V(0) = 0
+V(in) = 1
+V(out) = 0.6666666667
+```
+
+### 2) CLI 输出 PSF 文本
+
+```
+cargo run -p sim-cli -- tests/fixtures/netlists/basic_dc.cir --psf /tmp/basic_dc.psf
+```
+
+### 3) 启动 API 服务
+
+```
+cargo run -p sim-api -- --addr 127.0.0.1:3000
+```
+
+### 4) 使用 netlist 字符串触发 OP
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/op \
+  -H "Content-Type: application/json" \
+  -d "{\"netlist\":\"V1 in 0 DC 1\\nR1 in out 1k\\nR2 out 0 2k\\n.op\\n.end\\n\"}"
+```
+
+### 5) 使用文件路径触发 OP
+
+```
+curl -X POST http://127.0.0.1:3000/v1/run/op \
+  -H "Content-Type: application/json" \
+  -d "{\"path\":\"tests/fixtures/netlists/basic_dc.cir\"}"
+```
+
+说明:
+- `path` 只能访问当前工作目录内的文件（建议在仓库根目录启动服务）
+- 返回结果包含 `run_id`、节点名与电压数组
 
 ## AI 交互与 CLI
 
