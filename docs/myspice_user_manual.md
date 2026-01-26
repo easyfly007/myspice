@@ -273,6 +273,12 @@ MySpice 的线性求解器规划为 SuiteSparse 的 KLU。当前阶段仅完成�
 2) 若未设置，则尝试 `SUITESPARSE_DIR/include` 与 `SUITESPARSE_DIR/lib`
 3) 最后尝试系统默认路径
 
+---
+
+## 7. BSIM 模型文档
+
+完整说明请参考：`docs/bsim_model.md`。
+
 示例（Windows PowerShell）:
 
 ```

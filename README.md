@@ -555,3 +555,7 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 绘制建议:
 - QGraphicsView / QGraphicsScene
 - 器件符号与连线分别作为图元
+
+## BSIM 模型文档
+
+详见 `docs/bsim_model.md`（包含 BSIM 模型概念、当前支持参数、简化计算与 stamp 说明）。
