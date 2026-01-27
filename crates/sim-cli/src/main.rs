@@ -5,7 +5,43 @@ use sim_core::analysis::AnalysisPlan;
 use sim_core::circuit::AnalysisCmd;
 use sim_core::engine::Engine;
 use sim_core::netlist::{build_circuit, elaborate_netlist, parse_netlist_file};
-use sim_core::result_store::{ResultStore, RunStatus};
+use sim_core::result_store::{AnalysisType, ResultStore, RunStatus};
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+fn print_help() {
+    println!(
+        r#"MySpice SPICE Circuit Simulator
+
+USAGE:
+    sim-cli <NETLIST> [OPTIONS]
+
+ARGS:
+    <NETLIST>               Path to SPICE netlist file
+
+OPTIONS:
+    -h, --help              Print help information
+    -V, --version           Print version information
+    -o, --psf <PATH>        Write results to PSF text file
+    -a, --analysis <TYPE>   Analysis type: op, dc, tran (default: from netlist or op)
+    --dc-source <NAME>      DC sweep source name
+    --dc-start <VALUE>      DC sweep start voltage
+    --dc-stop <VALUE>       DC sweep stop voltage
+    --dc-step <VALUE>       DC sweep step size
+    --precision <N>         Output precision (1-15 significant digits, default: 6)
+
+EXAMPLES:
+    sim-cli circuit.cir                          # Run analysis from netlist
+    sim-cli circuit.cir --psf out.psf            # Export to PSF file
+    sim-cli circuit.cir -a dc --dc-source V1 \
+        --dc-start 0 --dc-stop 5 --dc-step 0.1   # DC sweep
+    sim-cli circuit.cir -a tran                  # Transient analysis"#
+    );
+}
+
+fn print_version() {
+    println!("myspice {}", VERSION);
+}
 
 fn main() {
     let mut args = env::args().skip(1).peekable();
@@ -16,9 +52,18 @@ fn main() {
     let mut dc_start: Option<f64> = None;
     let mut dc_stop: Option<f64> = None;
     let mut dc_step: Option<f64> = None;
+    let mut precision: usize = 6;
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--help" | "-h" => {
+                print_help();
+                std::process::exit(0);
+            }
+            "--version" | "-V" => {
+                print_version();
+                std::process::exit(0);
+            }
             "--psf" | "-o" => {
                 let Some(path) = args.next() else {
                     eprintln!("missing value for {}", arg);
@@ -61,11 +106,24 @@ fn main() {
                 };
                 dc_step = value.parse::<f64>().ok();
             }
+            "--precision" => {
+                let Some(value) = args.next() else {
+                    eprintln!("missing value for {}", arg);
+                    std::process::exit(2);
+                };
+                precision = match value.parse::<usize>() {
+                    Ok(p) if (1..=15).contains(&p) => p,
+                    _ => {
+                        eprintln!("precision must be between 1 and 15");
+                        std::process::exit(2);
+                    }
+                };
+            }
             _ => {
                 if netlist_path.is_none() {
                     netlist_path = Some(arg);
                 } else if psf_path.is_none() {
-                    // 兼容：第二个非参数当作输出路径
+                    // backward compatibility: second positional as output path
                     psf_path = Some(PathBuf::from(arg));
                 } else {
                     eprintln!("unexpected argument: {}", arg);
@@ -103,16 +161,12 @@ fn main() {
 
     let circuit = build_circuit(&ast, &elab);
     let (cmd, sweep) = select_analysis(&analysis, &circuit, dc_source, dc_start, dc_stop, dc_step);
-    if sweep.is_some() && psf_path.is_some() {
-        eprintln!("dc sweep does not support --psf output");
-        std::process::exit(2);
-    }
 
     let mut engine = Engine::new_default(circuit);
     let mut store = ResultStore::new();
 
     if let Some(sweep) = sweep {
-        run_dc_sweep(&mut engine, &mut store, cmd, sweep);
+        run_dc_sweep(&mut engine, &mut store, cmd, sweep.clone(), psf_path.as_deref(), precision);
     } else {
         let plan = AnalysisPlan { cmd };
         let run_id = engine.run_with_store(&plan, &mut store);
@@ -123,14 +177,27 @@ fn main() {
             std::process::exit(1);
         }
 
-        println!("run status: {:?} iterations={}", run.status, run.iterations);
-        for (idx, name) in run.node_names.iter().enumerate() {
-            let value = run.solution.get(idx).copied().unwrap_or(0.0);
-            println!("V({}) = {}", name, value);
+        // Print results based on analysis type
+        match run.analysis {
+            AnalysisType::Tran => {
+                println!("tran status: {:?} steps={}", run.status, run.iterations);
+                println!("Final values:");
+                for (idx, name) in run.node_names.iter().enumerate() {
+                    let value = run.solution.get(idx).copied().unwrap_or(0.0);
+                    println!("  V({}) = {:.*e}", name, precision, value);
+                }
+            }
+            _ => {
+                println!("run status: {:?} iterations={}", run.status, run.iterations);
+                for (idx, name) in run.node_names.iter().enumerate() {
+                    let value = run.solution.get(idx).copied().unwrap_or(0.0);
+                    println!("V({}) = {:.*e}", name, precision, value);
+                }
+            }
         }
 
         if let Some(path) = psf_path {
-            if let Err(err) = store.write_psf_text(run_id, &path) {
+            if let Err(err) = store.write_psf_text(run_id, &path, precision) {
                 eprintln!("failed to write psf: {}", err);
                 std::process::exit(1);
             }
@@ -139,6 +206,7 @@ fn main() {
     }
 }
 
+#[derive(Clone)]
 struct DcSweep {
     source: String,
     start: f64,
@@ -266,6 +334,8 @@ fn run_dc_sweep(
     store: &mut ResultStore,
     cmd: AnalysisCmd,
     sweep: DcSweep,
+    psf_path: Option<&Path>,
+    precision: usize,
 ) {
     if sweep.step <= 0.0 {
         eprintln!("dc step must be > 0");
@@ -275,6 +345,10 @@ fn run_dc_sweep(
         "dc sweep: {} from {} to {} step {}",
         sweep.source, sweep.start, sweep.stop, sweep.step
     );
+
+    let mut sweep_values: Vec<f64> = Vec::new();
+    let mut sweep_results: Vec<Vec<f64>> = Vec::new();
+    let mut node_names: Vec<String> = Vec::new();
 
     let mut value = sweep.start;
     let mut guard = 0usize;
@@ -290,18 +364,46 @@ fn run_dc_sweep(
             );
             std::process::exit(1);
         }
-        print!("{}={}", sweep.source, value);
+
+        // Capture node names from first run
+        if node_names.is_empty() {
+            node_names = run.node_names.clone();
+        }
+
+        // Collect sweep data
+        sweep_values.push(value);
+        sweep_results.push(run.solution.clone());
+
+        // Print to stdout
+        print!("{}={:.*e}", sweep.source, precision, value);
         for (idx, name) in run.node_names.iter().enumerate() {
             let v = run.solution.get(idx).copied().unwrap_or(0.0);
-            print!(" V({})={}", name, v);
+            print!(" V({})={:.*e}", name, precision, v);
         }
         println!();
+
         value += sweep.step;
         guard += 1;
         if guard > 1_000_000 {
             eprintln!("dc sweep aborted: too many steps");
             std::process::exit(2);
         }
+    }
+
+    // Write PSF output if requested
+    if let Some(path) = psf_path {
+        if let Err(err) = sim_core::psf::write_psf_sweep(
+            &sweep.source,
+            &sweep_values,
+            &node_names,
+            &sweep_results,
+            path,
+            precision,
+        ) {
+            eprintln!("failed to write psf: {}", err);
+            std::process::exit(1);
+        }
+        println!("psf written: {}", path.display());
     }
 }
 

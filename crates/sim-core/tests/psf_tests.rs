@@ -1,5 +1,4 @@
 use sim_core::result_store::{AnalysisType, ResultStore, RunId, RunResult, RunStatus};
-use std::path::PathBuf;
 
 #[test]
 fn psf_text_writer_outputs_basic_content() {
@@ -17,10 +16,11 @@ fn psf_text_writer_outputs_basic_content() {
 
     let mut path = std::env::temp_dir();
     path.push("myspice_psf_test.txt");
-    store.write_psf_text(run_id, &path).unwrap();
+    store.write_psf_text(run_id, &path, 6).unwrap();
 
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("PSF_TEXT"));
-    assert!(content.contains("analysis=Op"));
-    assert!(content.contains("n1 1"));
+    assert!(content.contains("analysis = Op"));
+    assert!(content.contains("V(n1)"));
+    assert!(content.contains("1.000000e0"));
 }

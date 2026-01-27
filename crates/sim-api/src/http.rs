@@ -214,7 +214,7 @@ async fn export_run(
         .cloned()
         .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "RUN_NOT_FOUND", "run_id not found", None))?;
     store
-        .write_psf_text(RunId(id), &path)
+        .write_psf_text(RunId(id), &path, 6)
         .map_err(|err| api_error(StatusCode::INTERNAL_SERVER_ERROR, "EXPORT_ERROR", &format!("export failed: {}", err), None))?;
     Ok(Json(run_to_response(RunId(id), run)))
 }

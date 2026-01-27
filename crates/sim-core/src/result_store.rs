@@ -43,12 +43,12 @@ impl ResultStore {
         id
     }
 
-    pub fn write_psf_text(&self, id: RunId, path: &std::path::Path) -> std::io::Result<()> {
+    pub fn write_psf_text(&self, id: RunId, path: &std::path::Path, precision: usize) -> std::io::Result<()> {
         let run = self
             .runs
             .get(id.0)
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "run not found"))?;
-        crate::psf::write_psf_text(run, path)
+        crate::psf::write_psf_text(run, path, precision)
     }
 }
 
