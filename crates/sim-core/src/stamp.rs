@@ -155,42 +155,75 @@ fn stamp_mos(ctx: &mut StampContext, inst: &Instance, x: Option<&[f64]>) -> Resu
     let drain = inst.nodes[0].0;
     let gate = inst.nodes[1].0;
     let source = inst.nodes[2].0;
+    let bulk = inst.nodes[3].0;
     let gmin = if ctx.gmin > 0.0 { ctx.gmin } else { 1e-12 };
-    let vth = param_value(&inst.params, &["vth", "vto"]).unwrap_or(1.0);
-    let beta = param_value(&inst.params, &["beta", "kp"]).unwrap_or(1e-3);
-    let lambda = param_value(&inst.params, &["lambda"]).unwrap_or(0.0);
+
+    // Parse model level (default to 49 for BSIM3)
+    let level = param_value(&inst.params, &["level"]).unwrap_or(49.0) as u32;
+
+    // Determine NMOS/PMOS from model type
+    let is_pmos = if let Some(t) = inst.params.get("type") {
+        let t_lower = t.to_ascii_lowercase();
+        t_lower.contains("pmos") || t_lower == "p"
+    } else if inst.params.contains_key("pmos") {
+        true
+    } else {
+        false
+    };
+
+    // Build BSIM parameters from instance params
+    let params = sim_devices::bsim::build_bsim_params(&inst.params, level, is_pmos);
+
+    // Get device dimensions
+    let w = param_value(&inst.params, &["w"]).unwrap_or(1e-6);
+    let l = param_value(&inst.params, &["l"]).unwrap_or(1e-6);
+
+    // Temperature (default 27C = 300.15K)
+    let temp = param_value(&inst.params, &["temp"]).unwrap_or(300.15);
+
     if let Some(x) = x {
         let vd = x.get(drain).copied().unwrap_or(0.0);
         let vg = x.get(gate).copied().unwrap_or(0.0);
         let vs = x.get(source).copied().unwrap_or(0.0);
-        let vgs = vg - vs;
-        let vds = vd - vs;
-        let (id, gm, gds) = if vgs <= vth {
-            (0.0, 0.0, gmin)
-        } else if vds < vgs - vth {
-            let id = beta * ((vgs - vth) * vds - 0.5 * vds * vds);
-            let gm = beta * vds;
-            let gds = beta * ((vgs - vth) - vds).max(0.0);
-            (id, gm, gds.max(gmin))
-        } else {
-            let id = 0.5 * beta * (vgs - vth) * (vgs - vth) * (1.0 + lambda * vds);
-            let gm = beta * (vgs - vth) * (1.0 + lambda * vds);
-            let gds = 0.5 * beta * (vgs - vth) * (vgs - vth) * lambda;
-            (id, gm, gds.max(gmin))
-        };
-        let ieq = id - gm * vgs - gds * vds;
+        let vb = x.get(bulk).copied().unwrap_or(0.0);
+
+        // Call BSIM evaluator
+        let output = sim_devices::bsim::evaluate_mos(
+            &params, w, l, vd, vg, vs, vb, temp
+        );
+
+        let gm = output.gm;
+        let gds = output.gds.max(gmin);
+        let gmbs = output.gmbs;
+        let ieq = output.ieq;
+
+        // Stamp gds (output conductance between drain and source)
         ctx.add(drain, drain, gds);
         ctx.add(source, source, gds);
         ctx.add(drain, source, -gds);
         ctx.add(source, drain, -gds);
+
+        // Stamp gm (transconductance: current controlled by Vgs)
         ctx.add(drain, gate, gm);
         ctx.add(drain, source, -gm);
         ctx.add(source, gate, -gm);
         ctx.add(source, source, gm);
+
+        // Stamp gmbs (body transconductance: current controlled by Vbs)
+        if gmbs.abs() > gmin * 0.01 {
+            ctx.add(drain, bulk, gmbs);
+            ctx.add(drain, source, -gmbs);
+            ctx.add(source, bulk, -gmbs);
+            ctx.add(source, source, gmbs);
+        }
+
+        // Stamp equivalent current source
         ctx.add_rhs(drain, -ieq);
         ctx.add_rhs(source, ieq);
         return Ok(());
     }
+
+    // Initial guess: add small conductance for convergence
     ctx.add(drain, drain, gmin);
     ctx.add(source, source, gmin);
     ctx.add(drain, source, -gmin);
