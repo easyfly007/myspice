@@ -94,6 +94,7 @@ pub enum DeviceKind {
 #[derive(Debug, Clone)]
 pub struct ElaboratedNetlist {
     pub instances: Vec<DeviceStmt>,
+    pub subckt_models: Vec<ControlStmt>,
     pub control_count: usize,
     pub error_count: usize,
 }
@@ -809,6 +810,7 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
     let param_table = build_param_table(&top_level);
     let subckt_map = build_subckt_map(&subckts);
     let mut instances = Vec::new();
+    let mut subckt_models = Vec::new();
     let mut control_count = 0;
 
     for stmt in top_level {
@@ -832,6 +834,7 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
                                 &local_params,
                                 &param_table,
                                 &mut errors,
+                                &mut subckt_models,
                             );
                             instances.extend(expanded);
                             continue;
@@ -859,6 +862,7 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
 
     ElaboratedNetlist {
         instances,
+        subckt_models,
         control_count,
         error_count: errors.len(),
     }
@@ -870,6 +874,7 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
 
     let mut circuit = Circuit::new();
 
+    // Process top-level statements from AST
     for stmt in &ast.statements {
         if let Stmt::Control(ctrl) = stmt {
             match ctrl.kind {
@@ -939,6 +944,23 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
                 }
                 _ => {}
             }
+        }
+    }
+
+    // Process .model statements extracted from subcircuits during elaboration
+    for ctrl in &elab.subckt_models {
+        if let (Some(name), Some(model_type)) = (&ctrl.model_name, &ctrl.model_type) {
+            let mut params = HashMap::new();
+            for param in &ctrl.params {
+                params.insert(param.key.to_ascii_lowercase(), param.value.clone());
+            }
+            let name_norm = name.to_ascii_lowercase();
+            let model_type_norm = model_type.to_ascii_lowercase();
+            circuit.models.insert(Model {
+                name: name_norm,
+                model_type: model_type_norm,
+                params,
+            });
         }
     }
 
@@ -1214,51 +1236,6 @@ fn collect_params_from_body(body: &[Stmt]) -> Vec<Param> {
         }
     }
     params
-}
-
-fn expand_subckt_instance(
-    instance: &DeviceStmt,
-    def: &SubcktDef,
-    errors: &mut Vec<ParseError>,
-) -> Vec<DeviceStmt> {
-    let mut expanded = Vec::new();
-    let mut port_map = std::collections::HashMap::new();
-
-    if def.ports.len() != instance.nodes.len() {
-        errors.push(ParseError {
-            line: instance.line,
-            message: format!(
-                "子电路端口数量不匹配: {} 期望 {} 实际 {}",
-                def.name,
-                def.ports.len(),
-                instance.nodes.len()
-            ),
-        });
-    }
-
-    for (port, node) in def.ports.iter().zip(instance.nodes.iter()) {
-        port_map.insert(port.clone(), node.clone());
-    }
-
-    for stmt in &def.body {
-        match stmt {
-            Stmt::Device(dev) => {
-                let mut cloned = dev.clone();
-                cloned.name = format!("{}.{}", instance.name, dev.name);
-                cloned.nodes = dev
-                    .nodes
-                    .iter()
-                    .map(|node| map_subckt_node(instance, &port_map, node))
-                    .collect();
-                expanded.push(cloned);
-            }
-            _ => {
-                // TODO: 目前仅展开子电路内的器件语句
-            }
-        }
-    }
-
-    expanded
 }
 
 fn map_subckt_node(
@@ -1663,6 +1640,7 @@ fn expand_subckt_instance_recursive(
     local_params: &std::collections::HashMap<String, String>,
     global_params: &std::collections::HashMap<String, String>,
     errors: &mut Vec<ParseError>,
+    models: &mut Vec<ControlStmt>,
 ) -> Vec<DeviceStmt> {
     let (body, nested_subckts, nested_errors) = extract_subckts(&def.body);
     errors.extend(nested_errors);
@@ -1706,6 +1684,7 @@ fn expand_subckt_instance_recursive(
                                 &child_params,
                                 global_params,
                                 errors,
+                                models,
                             );
                             expanded.extend(child_expanded);
                             continue;
@@ -1721,7 +1700,18 @@ fn expand_subckt_instance_recursive(
                 apply_params_to_device_scoped(global_params, local_params, &mut final_inst);
                 expanded.push(final_inst);
             }
-            _ => {}
+            Stmt::Control(ctrl) if matches!(ctrl.kind, ControlKind::Model) => {
+                // Extract .model statements from subcircuits
+                // Scope the model name to avoid conflicts
+                let mut scoped_model = ctrl.clone();
+                if let Some(ref name) = scoped_model.model_name {
+                    scoped_model.model_name = Some(format!("{}.{}", instance.name, name));
+                }
+                models.push(scoped_model);
+            }
+            _ => {
+                // Comments, .param (handled separately), and other control statements are ignored
+            }
         }
     }
 

@@ -33,8 +33,12 @@ impl DeviceStamp for InstanceStamp {
             DeviceKind::D => stamp_diode(ctx, &self.instance, x),
             DeviceKind::M => stamp_mos(ctx, &self.instance, x),
             DeviceKind::L => stamp_inductor_dc(ctx, &self.instance),
-            DeviceKind::C => Ok(()), // 电容在 DC 下开路
-            _ => Ok(()), // TODO: 完善其他器件 stamp
+            DeviceKind::C => Ok(()), // Capacitor is open circuit in DC
+            DeviceKind::E => stamp_vcvs(ctx, &self.instance),
+            DeviceKind::G => stamp_vccs(ctx, &self.instance),
+            DeviceKind::F => stamp_cccs(ctx, &self.instance),
+            DeviceKind::H => stamp_ccvs(ctx, &self.instance),
+            DeviceKind::X => Ok(()), // Subcircuit instances are already expanded
         }
     }
 
@@ -468,5 +472,142 @@ fn stamp_inductor_dc(ctx: &mut StampContext, inst: &Instance) -> Result<(), Stam
     ctx.add(b, b, gshort);
     ctx.add(a, b, -gshort);
     ctx.add(b, a, -gshort);
+    Ok(())
+}
+
+/// Voltage Controlled Voltage Source (VCVS)
+/// Vout = E * Vin where E is the gain
+/// nodes: [out+, out-, in+, in-]
+fn stamp_vcvs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 4 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gain = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+    let in_p = inst.nodes[2].0;
+    let in_n = inst.nodes[3].0;
+
+    // Allocate auxiliary variable for output current
+    let k = ctx.allocate_aux(&inst.name);
+
+    // KCL at output nodes: I flows from out+ to out-
+    ctx.add(out_p, k, 1.0);
+    ctx.add(out_n, k, -1.0);
+
+    // Constitutive relation: V(out+) - V(out-) = E * (V(in+) - V(in-))
+    ctx.add(k, out_p, 1.0);
+    ctx.add(k, out_n, -1.0);
+    ctx.add(k, in_p, -gain);
+    ctx.add(k, in_n, gain);
+
+    Ok(())
+}
+
+/// Voltage Controlled Current Source (VCCS)
+/// Iout = G * Vin where G is the transconductance
+/// nodes: [out+, out-, in+, in-]
+fn stamp_vccs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 4 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gm = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+    let in_p = inst.nodes[2].0;
+    let in_n = inst.nodes[3].0;
+
+    // Current flows from out+ to out-, controlled by V(in+) - V(in-)
+    // I = G * (V(in+) - V(in-))
+    ctx.add(out_p, in_p, gm);
+    ctx.add(out_p, in_n, -gm);
+    ctx.add(out_n, in_p, -gm);
+    ctx.add(out_n, in_n, gm);
+
+    Ok(())
+}
+
+/// Current Controlled Current Source (CCCS)
+/// Iout = F * Icontrol where F is the current gain
+/// nodes: [out+, out-], control: name of controlling voltage source
+fn stamp_cccs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gain = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Get the controlling voltage source's auxiliary variable
+    let control_name = inst.control.as_ref().ok_or(StampError::MissingValue)?;
+    let control_aux = ctx
+        .aux
+        .name_to_id
+        .get(control_name)
+        .copied()
+        .ok_or(StampError::MissingValue)?;
+    let k_control = ctx.node_count + control_aux;
+
+    // Current flows from out+ to out-, controlled by current through controlling source
+    // I = F * I_control
+    ctx.add(out_p, k_control, gain);
+    ctx.add(out_n, k_control, -gain);
+
+    Ok(())
+}
+
+/// Current Controlled Voltage Source (CCVS)
+/// Vout = H * Icontrol where H is the transresistance
+/// nodes: [out+, out-], control: name of controlling voltage source
+fn stamp_ccvs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gain = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Get the controlling voltage source's auxiliary variable
+    let control_name = inst.control.as_ref().ok_or(StampError::MissingValue)?;
+    let control_aux = ctx
+        .aux
+        .name_to_id
+        .get(control_name)
+        .copied()
+        .ok_or(StampError::MissingValue)?;
+    let k_control = ctx.node_count + control_aux;
+
+    // Allocate auxiliary variable for output current
+    let k = ctx.allocate_aux(&inst.name);
+
+    // KCL at output nodes
+    ctx.add(out_p, k, 1.0);
+    ctx.add(out_n, k, -1.0);
+
+    // Constitutive relation: V(out+) - V(out-) = H * I_control
+    ctx.add(k, out_p, 1.0);
+    ctx.add(k, out_n, -1.0);
+    ctx.add(k, k_control, -gain);
+
     Ok(())
 }

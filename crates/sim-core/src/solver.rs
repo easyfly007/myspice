@@ -181,23 +181,29 @@ pub struct KluSolver {
 
 impl KluSolver {
     pub fn new(n: usize) -> Self {
-        let mut solver = Self {
+        #[cfg(feature = "klu")]
+        {
+            let mut solver = Self {
+                n,
+                enabled: true,
+                last_ap: Vec::new(),
+                last_ai: Vec::new(),
+                symbolic: std::ptr::null_mut(),
+                numeric: std::ptr::null_mut(),
+                common: klu_sys::klu_common { status: 0 },
+            };
+            unsafe {
+                klu_sys::klu_defaults(&mut solver.common as *mut klu_sys::klu_common);
+            }
+            solver
+        }
+        #[cfg(not(feature = "klu"))]
+        Self {
             n,
-            enabled: cfg!(feature = "klu"),
+            enabled: false,
             last_ap: Vec::new(),
             last_ai: Vec::new(),
-            #[cfg(feature = "klu")]
-            symbolic: std::ptr::null_mut(),
-            #[cfg(feature = "klu")]
-            numeric: std::ptr::null_mut(),
-            #[cfg(feature = "klu")]
-            common: klu_sys::klu_common { status: 0 },
-        };
-        #[cfg(feature = "klu")]
-        unsafe {
-            klu_sys::klu_defaults(&mut solver.common as *mut klu_sys::klu_common);
         }
-        solver
     }
 }
 
@@ -239,6 +245,7 @@ impl LinearSolver for KluSolver {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
         if !self.enabled {
             return Err(SolverError::FactorFailed);
@@ -262,6 +269,7 @@ impl LinearSolver for KluSolver {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
         if !self.enabled {
             return Err(SolverError::SolveFailed);
