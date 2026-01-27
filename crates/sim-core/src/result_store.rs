@@ -22,8 +22,15 @@ pub struct RunResult {
     pub status: RunStatus,
     pub iterations: usize,
     pub node_names: Vec<String>,
+    /// Solution vector for single-point analysis (OP)
     pub solution: Vec<f64>,
     pub message: Option<String>,
+    /// DC sweep: name of swept variable (e.g., "V1")
+    pub sweep_var: Option<String>,
+    /// DC sweep: values at each sweep point
+    pub sweep_values: Vec<f64>,
+    /// DC sweep: solution vectors at each sweep point
+    pub sweep_solutions: Vec<Vec<f64>>,
 }
 
 #[derive(Debug, Clone)]

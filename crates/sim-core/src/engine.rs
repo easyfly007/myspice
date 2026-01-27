@@ -51,9 +51,11 @@ impl Engine {
     }
 
     pub fn run_with_store(&mut self, plan: &AnalysisPlan, store: &mut ResultStore) -> RunId {
-        let result = match plan.cmd {
+        let result = match &plan.cmd {
             crate::circuit::AnalysisCmd::Tran { .. } => self.run_tran_result(),
-            crate::circuit::AnalysisCmd::Dc { .. } => self.run_dc_result(AnalysisType::Dc),
+            crate::circuit::AnalysisCmd::Dc { source, start, stop, step } => {
+                self.run_dc_sweep_result(source, *start, *stop, *step)
+            }
             _ => self.run_dc_result(AnalysisType::Op),
         };
         store.add_run(result)
@@ -106,6 +108,9 @@ impl Engine {
                 Vec::new()
             },
             message: result.message,
+            sweep_var: None,
+            sweep_values: Vec::new(),
+            sweep_solutions: Vec::new(),
         }
     }
 
@@ -192,6 +197,130 @@ impl Engine {
                 Vec::new()
             },
             message: None,
+            sweep_var: None,
+            sweep_values: Vec::new(),
+            sweep_solutions: Vec::new(),
+        }
+    }
+
+    /// Run DC sweep analysis
+    /// Sweeps the specified source from start to stop with given step size
+    fn run_dc_sweep_result(&mut self, source: &str, start: f64, stop: f64, step: f64) -> RunResult {
+        let config = NewtonConfig::default();
+        let node_count = self.circuit.nodes.id_to_name.len();
+        let gnd = self.circuit.nodes.gnd_id.0;
+
+        // Find the source instance index
+        let source_lower = source.to_ascii_lowercase();
+        let source_idx = self.circuit.instances.instances.iter()
+            .position(|inst| inst.name.to_ascii_lowercase() == source_lower);
+
+        if source_idx.is_none() {
+            return RunResult {
+                id: RunId(0),
+                analysis: AnalysisType::Dc,
+                status: RunStatus::Failed,
+                iterations: 0,
+                node_names: self.circuit.nodes.id_to_name.clone(),
+                solution: Vec::new(),
+                message: Some(format!("DC sweep source '{}' not found", source)),
+                sweep_var: Some(source.to_string()),
+                sweep_values: Vec::new(),
+                sweep_solutions: Vec::new(),
+            };
+        }
+        let source_idx = source_idx.unwrap();
+
+        // Calculate sweep points
+        let mut sweep_values = Vec::new();
+        let step_size = if stop >= start { step.abs() } else { -step.abs() };
+
+        if step_size.abs() < 1e-15 {
+            // Zero step - just do single point at start
+            sweep_values.push(start);
+        } else {
+            // Calculate number of points to avoid floating point accumulation errors
+            let range = stop - start;
+            let n_points = ((range / step_size).abs().floor() as usize) + 1;
+
+            for i in 0..n_points {
+                let value = start + (i as f64) * step_size;
+                sweep_values.push(value);
+            }
+
+            // Ensure we include the exact stop value if close enough
+            if let Some(&last) = sweep_values.last() {
+                if (last - stop).abs() > 1e-12 && sweep_values.len() < 10000 {
+                    // Don't add if we're very close to stop already
+                    if (last - stop).abs() / step_size.abs() > 0.5 {
+                        sweep_values.push(stop);
+                    }
+                }
+            }
+        }
+
+        let mut sweep_solutions = Vec::new();
+        let mut total_iterations = 0;
+        let mut final_status = RunStatus::Converged;
+        let mut final_message = None;
+
+        // Use previous solution as initial guess for next point (continuation)
+        let mut x = vec![0.0; node_count];
+        self.solver.prepare(node_count);
+
+        for &sweep_val in &sweep_values {
+            // Update source value
+            self.circuit.instances.instances[source_idx].value = Some(sweep_val.to_string());
+
+            // Run Newton iteration at this sweep point
+            let result = run_newton_with_stepping(&config, &mut x, |x, gmin, source_scale| {
+                let mut mna = MnaBuilder::new(node_count);
+                for inst in &self.circuit.instances.instances {
+                    let stamp = InstanceStamp {
+                        instance: inst.clone(),
+                    };
+                    let mut ctx = mna.context_with(gmin, source_scale);
+                    let _ = stamp.stamp_dc(&mut ctx, Some(x));
+                }
+                // Ground node constraint
+                mna.builder.insert(gnd, gnd, 1.0);
+                let (ap, ai, ax) = mna.builder.finalize();
+                (ap, ai, ax, mna.rhs, mna.builder.n)
+            }, self.solver.as_mut());
+
+            total_iterations += result.iterations;
+
+            match result.reason {
+                crate::newton::NewtonExitReason::Converged => {
+                    sweep_solutions.push(x.clone());
+                }
+                crate::newton::NewtonExitReason::MaxIters => {
+                    final_status = RunStatus::MaxIters;
+                    final_message = Some(format!("Failed to converge at sweep point {}", sweep_val));
+                    break;
+                }
+                crate::newton::NewtonExitReason::SolverFailure => {
+                    final_status = RunStatus::Failed;
+                    final_message = Some(format!("Solver failure at sweep point {}", sweep_val));
+                    break;
+                }
+            }
+        }
+
+        // For compatibility, set solution to the last sweep point solution
+        let solution = sweep_solutions.last().cloned().unwrap_or_default();
+
+        RunResult {
+            id: RunId(0),
+            analysis: AnalysisType::Dc,
+            status: final_status,
+            iterations: total_iterations,
+            node_names: self.circuit.nodes.id_to_name.clone(),
+            solution,
+            message: final_message,
+            sweep_var: Some(source.to_string()),
+            sweep_values,
+            sweep_solutions,
         }
     }
 }

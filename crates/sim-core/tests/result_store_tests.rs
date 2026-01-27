@@ -11,6 +11,9 @@ fn result_store_adds_run() {
         node_names: vec!["0".to_string(), "n1".to_string()],
         solution: vec![0.0, 1.0],
         message: None,
+        sweep_var: None,
+        sweep_values: Vec::new(),
+        sweep_solutions: Vec::new(),
     };
     let id = store.add_run(run);
     assert_eq!(id.0, 0);

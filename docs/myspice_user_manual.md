@@ -165,7 +165,70 @@ total=50 passed=50 failed=0 passrate=100.00%
 
 ---
 
-## 3. 仿真结果查看
+## 3. DC Sweep 分析
+
+### 3.1 基本语法
+
+在网表中使用 `.dc` 命令定义扫描:
+
+```spice
+.dc <source> <start> <stop> <step>
+```
+
+参数说明:
+- `<source>`: 要扫描的电压源或电流源名称 (如 V1, I1)
+- `<start>`: 起始值
+- `<stop>`: 结束值
+- `<step>`: 步进值
+
+### 3.2 示例
+
+```spice
+* DC Sweep - 电阻分压器
+V1 in 0 DC 0
+R1 in out 1k
+R2 out 0 2k
+.dc V1 0 5 0.5
+.end
+```
+
+此示例将 V1 从 0V 扫描到 5V，步进 0.5V (共 11 个点)。
+
+### 3.3 支持特性
+
+- **正向/反向扫描**: start 可以大于或小于 stop
+- **单点扫描**: start == stop 时只计算一个点
+- **解的连续性**: 使用前一点的解作为下一点的初始值，提高收敛性
+- **负电压扫描**: 支持负电压范围
+
+### 3.4 命令行使用
+
+```bash
+# 使用网表中的 .dc 命令
+sim-cli example.cir
+
+# 通过命令行参数指定扫描
+sim-cli example.cir --analysis dc --dc-source V1 --dc-start 0 --dc-stop 5 --dc-step 0.5
+```
+
+### 3.5 API 使用
+
+```bash
+curl -X POST http://127.0.0.1:3000/v1/run/dc \
+  -H "Content-Type: application/json" \
+  -d '{"path":"example.cir","source":"V1","start":0,"stop":5,"step":0.5}'
+```
+
+### 3.6 结果格式
+
+DC sweep 的结果包含:
+- `sweep_var`: 扫描变量名
+- `sweep_values`: 各扫描点的值
+- `sweep_solutions`: 各扫描点的完整解向量
+
+---
+
+## 4. 仿真结果查看
 
 当前阶段已支持 OP 结果输出与 PSF 文本导出（默认 Dense，KLU 可选）。未来输出将支持:
 
@@ -177,23 +240,30 @@ total=50 passed=50 failed=0 passrate=100.00%
 - 波形数据查询与导出
 - 更完整的 PSF 文本格式输出
 
-### 3.1 结果解读建议 (未来支持)
+### 4.1 结果解读建议
 
 - OP: 查看静态工作点电压与电流
-- DC Sweep: 查看参数扫描曲线
+- DC Sweep: 查看参数扫描曲线，验证电路传输特性
 - TRAN: 查看时域波形
 
 ---
 
-## 4. 常见问题
+## 5. 常见问题
 
-### 4.1 提示缺少 .end
+### 5.1 提示缺少 .end
 
 确保网表末尾有 `.end` 行。
 
-### 4.2 无输出结果
+### 5.2 无输出结果
 
 当前版本已支持基础求解输出。若无输出，通常是求解失败或网表语法不完整，请先检查错误提示。
+
+### 5.3 DC Sweep 收敛失败
+
+如果在某个扫描点收敛失败:
+- 检查电路是否有效 (是否有浮空节点)
+- 尝试减小步进值
+- 检查初始值是否在有效范围内
 
 ---
 

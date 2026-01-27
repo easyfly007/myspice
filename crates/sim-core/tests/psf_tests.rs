@@ -11,6 +11,9 @@ fn psf_text_writer_outputs_basic_content() {
         node_names: vec!["0".to_string(), "n1".to_string()],
         solution: vec![0.0, 1.0],
         message: None,
+        sweep_var: None,
+        sweep_values: Vec::new(),
+        sweep_solutions: Vec::new(),
     };
     let run_id = store.add_run(run);
 
