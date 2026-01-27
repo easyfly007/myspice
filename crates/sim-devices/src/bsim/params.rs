@@ -186,6 +186,110 @@ pub struct BsimParams {
     pub af: f64,
     /// Flicker noise frequency exponent [dimensionless]
     pub ef: f64,
+
+    // ============================================================
+    // BSIM4 Enhanced Parameters (Level 54)
+    // ============================================================
+
+    // ============ BSIM4 Enhanced Threshold Voltage ============
+    /// Width-dependent short-channel effect coefficient [1/m]
+    pub dvt0w: f64,
+    /// Width-dependent short-channel effect exponent [1/m]
+    pub dvt1w: f64,
+    /// Body-bias coefficient for width-dependent SCE [1/V]
+    pub dvt2w: f64,
+    /// Subthreshold offset voltage [V]
+    pub voff: f64,
+    /// Length-dependent VOFF [V*m]
+    pub voffl: f64,
+    /// Minimum inversion factor [dimensionless]
+    pub minv: f64,
+    /// Narrow width effect coefficient [dimensionless]
+    pub k3: f64,
+    /// Body-bias coefficient for K3 [1/V]
+    pub k3b: f64,
+    /// Narrow width reference [m]
+    pub w0: f64,
+    /// Lateral non-uniform doping effect [m]
+    pub lpe0: f64,
+    /// Body-bias dependence of LPE [m]
+    pub lpeb: f64,
+    /// Flat-band voltage [V]
+    pub vfb: f64,
+
+    // ============ BSIM4 Enhanced Mobility ============
+    /// Primary temperature exponent for mobility [dimensionless]
+    pub ute0: f64,
+    /// Secondary temperature exponent [dimensionless]
+    pub ute1: f64,
+    /// Phonon scattering model selector (0-3)
+    pub pemod: u32,
+    /// Channel length uniformity parameter [dimensionless]
+    pub up: f64,
+    /// Reference length for UP [m]
+    pub lp: f64,
+    /// Drain bias mobility coefficient [1/V]
+    pub ud: f64,
+    /// Secondary drain mobility coefficient [dimensionless]
+    pub ud1: f64,
+    /// Field effect mobility exponent [dimensionless]
+    pub eu: f64,
+
+    // ============ BSIM4 Enhanced Velocity Saturation ============
+    /// Alternative saturation velocity [m/s] (0 = use VSAT)
+    pub vs: f64,
+    /// Temperature coefficient of VSAT [m/s/K]
+    pub vsattemp: f64,
+    /// Velocity saturation exponent [dimensionless]
+    pub lambda: f64,
+    /// Thermal velocity [m/s]
+    pub vtl: f64,
+    /// Characteristic length for velocity [m]
+    pub lc: f64,
+
+    // ============ BSIM4 Substrate Current (Impact Ionization) ============
+    /// Impact ionization drain voltage coefficient [1/V]
+    pub alpha1: f64,
+    /// Impact ionization body-bias coefficient [V]
+    pub beta1: f64,
+
+    // ============ BSIM4 Stress Effects ============
+    /// Reference SA for stress calculation [m]
+    pub saref: f64,
+    /// Reference SB for stress calculation [m]
+    pub sbref: f64,
+    /// LOD width [m]
+    pub wlod: f64,
+    /// Mobility stress coefficient [dimensionless]
+    pub ku0: f64,
+    /// Threshold voltage stress coefficient [V]
+    pub kvth0: f64,
+    /// U0 stress multiplier [dimensionless]
+    pub ku0mult: f64,
+    /// Temperature coefficient for KU0 [1/K]
+    pub tku0: f64,
+
+    // ============ BSIM4 Gate Tunneling ============
+    /// Source-side gate tunneling current density [A/m^2]
+    pub jtss: f64,
+    /// Drain-side gate tunneling current density [A/m^2]
+    pub jtsd: f64,
+    /// Gate tunneling ideality factor [dimensionless]
+    pub nsti: f64,
+    /// Source-side tunneling voltage [V]
+    pub vtss: f64,
+    /// Drain-side tunneling voltage [V]
+    pub vtsd: f64,
+
+    // ============ BSIM4 Enhanced Output Conductance ============
+    /// Gate voltage PDIBL parameter [dimensionless]
+    pub pvag: f64,
+    /// PDIBL output resistance factor [dimensionless]
+    pub fprout: f64,
+    /// Drain impact on output conductance [dimensionless]
+    pub pdits: f64,
+    /// Effective Vds transition smoothing [V]
+    pub delta: f64,
 }
 
 impl Default for BsimParams {
@@ -277,6 +381,64 @@ impl BsimParams {
             kf: 0.0,
             af: 1.0,
             ef: 1.0,
+
+            // ============ BSIM4 Parameters ============
+            // Enhanced Threshold Voltage
+            dvt0w: 0.0,
+            dvt1w: 5.3e6,
+            dvt2w: -0.032,
+            voff: -0.1,
+            voffl: 0.0,
+            minv: 0.0,
+            k3: 80.0,
+            k3b: 0.0,
+            w0: 0.0,
+            lpe0: 1.74e-7,
+            lpeb: 0.0,
+            vfb: -1.0,
+
+            // Enhanced Mobility
+            ute0: -1.5,
+            ute1: 0.0,
+            pemod: 0,
+            up: 0.0,
+            lp: 1e-5,
+            ud: 0.0,
+            ud1: 0.0,
+            eu: 1.67,
+
+            // Enhanced Velocity Saturation
+            vs: 0.0,
+            vsattemp: 0.0,
+            lambda: 0.0,
+            vtl: 2.0e5,
+            lc: 5e-9,
+
+            // Substrate Current (Impact Ionization)
+            alpha1: 0.0,
+            beta1: 0.0,
+
+            // Stress Effects
+            saref: 1e-6,
+            sbref: 1e-6,
+            wlod: 0.0,
+            ku0: 0.0,
+            kvth0: 0.0,
+            ku0mult: 1.0,
+            tku0: 0.0,
+
+            // Gate Tunneling
+            jtss: 0.0,
+            jtsd: 0.0,
+            nsti: 1.0,
+            vtss: 10.0,
+            vtsd: 10.0,
+
+            // Enhanced Output Conductance
+            pvag: 0.0,
+            fprout: 0.0,
+            pdits: 0.0,
+            delta: 0.01,
         }
     }
 
@@ -288,6 +450,9 @@ impl BsimParams {
         params.u0 = 150.0;       // Lower mobility for holes
         params.ute = -1.0;       // Different temp coefficient
         params.kt1 = -0.08;
+        // BSIM4 PMOS adjustments
+        params.voff = 0.1;       // Positive for PMOS
+        params.ute0 = -1.0;      // Different temp coefficient for PMOS
         params
     }
 

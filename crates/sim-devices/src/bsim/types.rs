@@ -75,3 +75,56 @@ pub struct BsimState {
     /// Channel length modulation factor
     pub clm_factor: f64,
 }
+
+// ============================================================
+// BSIM4 Extended Types
+// ============================================================
+
+/// Extended output from BSIM4 DC evaluation
+///
+/// Includes additional currents for substrate and gate tunneling.
+#[derive(Debug, Clone, Default)]
+pub struct Bsim4Output {
+    /// Base BSIM output (Ids, gm, gds, gmbs, ieq, region, vth_eff)
+    pub base: BsimOutput,
+
+    /// Substrate current from impact ionization [A]
+    pub isub: f64,
+    /// Substrate conductance dIsub/dVds [S]
+    pub gsub: f64,
+
+    /// Gate-source tunneling current [A]
+    pub igs: f64,
+    /// Gate-drain tunneling current [A]
+    pub igd: f64,
+    /// Gate-source tunneling conductance [S]
+    pub gigs: f64,
+    /// Gate-drain tunneling conductance [S]
+    pub gigd: f64,
+
+    /// Effective mobility [cm^2/V/s]
+    pub ueff: f64,
+    /// Saturation voltage [V]
+    pub vdsat: f64,
+}
+
+/// Extended internal state for BSIM4 calculations
+#[derive(Debug, Clone, Default)]
+pub struct Bsim4State {
+    /// Base BSIM state
+    pub base: BsimState,
+
+    /// Stress effect on mobility [multiplier]
+    pub stress_ueff: f64,
+    /// Stress effect on Vth [V shift]
+    pub stress_vth: f64,
+
+    /// Width-dependent SCE contribution [V]
+    pub sce_width: f64,
+
+    /// Impact ionization multiplication factor
+    pub ii_mult: f64,
+
+    /// Gate tunneling current density [A/m^2]
+    pub jtun: f64,
+}

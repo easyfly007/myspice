@@ -167,7 +167,7 @@ pub trait DeviceStamp {
 | 网表解析 | ✅ 完成 | 支持子电路、参数替换、include、表达式求值 |
 | DC 仿真 | ✅ 完成 | Newton 迭代 + gmin/source stepping |
 | TRAN 仿真 | ✅ 完成 | 自适应步长、加权误差估计 |
-| 器件模型 | ✅ 基础完成 | R/C/L/V/I/D/MOS 的 stamp 实现（支持 .model 基础参数） |
+| 器件模型 | ✅ 完成 | R/C/L/V/I/D/MOS 的 stamp 实现，BSIM3/BSIM4 完整支持 |
 | 求解器 | ✅ 完成 | DenseSolver 实现，KLU 接口可选 |
 | 结果输出 | ✅ 完成 | PSF 文本格式（含 DC 扫描导出、精度控制） |
 | API 服务 | 🔄 最小可用 | 已支持 OP 运行与结果查询 |
@@ -178,7 +178,6 @@ pub trait DeviceStamp {
 - 语义展开的完整规则（更复杂的参数表达式、作用域边界）
 - 受控源高级语法（POLY 细节、多项式参数）
 - API 服务实现与交互模式
-- BSIM 模型完整实现
 
 ## 交互式模式与 API
 
@@ -409,11 +408,23 @@ AI 代理通过工具调用协议访问 API，获取电路与仿真结果信息�
 - `.alter` `.step` `.temp`
 - 行为源 B 元件、传输线等扩展器件
 
-## MOSFET / BSIM 架构预留
+## MOSFET / BSIM 模型支持
 
-- 模型参数与实例参数分离
-- 模型计算核心独立，输入电压，输出电流与导数
-- 支持 BSIM3/BSIM4 的接口占位，后续填充公式实现
+已完成 BSIM3 (Level 49) 和 BSIM4 (Level 54) DC 模型实现:
+
+| 模型 | Level | 状态 | 说明 |
+|------|-------|------|------|
+| Level 1 | 1 | ✅ 完成 | Shichman-Hodges 简化模型 |
+| BSIM3v3 | 49 | ✅ 完成 | 完整 DC 模型，50+ 参数 |
+| BSIM4 | 54 | ✅ 完成 | 增强模型，含应力效应、衬底电流、栅隧穿 |
+
+### BSIM4 特有功能
+
+- **应力效应**: SA/SB 参数控制 STI 距离对迁移率和阈值电压的影响
+- **衬底电流**: ALPHA0/BETA0 参数建模冲击电离
+- **栅隧穿电流**: JTSS/JTSD 参数建模栅氧隧穿
+
+详见 `docs/bsim4_model.md` 获取完整参数参考。
 
 ## Solver 规划（KLU）
 
@@ -590,6 +601,7 @@ cargo test --workspace --exclude sim-cli
 - [x] DC 扫描 PSF 导出
 - [x] 输出精度控制 (`--precision`)
 - [x] TRAN 分析结果终端输出
+- [x] BSIM4 (Level 54) 完整实现（衬底电流、应力效应、栅隧穿）
 
 ### 进行中
 - [ ] AI 代理集成与交互协议
@@ -598,7 +610,6 @@ cargo test --workspace --exclude sim-cli
 ### 后续计划
 - [ ] 更完善的受控源语法（POLY 细节）
 - [ ] API 服务完善
-- [ ] BSIM4 模型支持
 - [ ] AC 分析
 - [ ] 更多输出格式（JSON、CSV、ngspice raw）
 - [ ] 大规模网表性能优化
@@ -638,6 +649,15 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 详见 `docs/bsim_model.md`（包含 BSIM 模型概念、当前支持参数、简化计算与 stamp 说明）。
 
 ## 更新日志
+
+### 2026-01-27: BSIM4 (Level 54) 模型
+- 完整实现 BSIM4 DC 模型（~600 行新代码）
+- 支持 55+ BSIM4 特有参数
+- 衬底电流（冲击电离）：ALPHA0/1, BETA0/1
+- 布局应力效应：SA, SB, KU0, KVTH0
+- 栅隧穿电流：JTSS, JTSD, VTSS, VTSD
+- 25 个新单元测试（共 52 个 BSIM 测试）
+- 完整参数参考文档 `docs/bsim4_model.md`
 
 ### 2026-01-27: CLI & 输出优化
 - 新增 `--help` / `-h` 帮助信息

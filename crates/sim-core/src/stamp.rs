@@ -181,13 +181,96 @@ fn stamp_mos(ctx: &mut StampContext, inst: &Instance, x: Option<&[f64]>) -> Resu
     // Temperature (default 27C = 300.15K)
     let temp = param_value(&inst.params, &["temp"]).unwrap_or(300.15);
 
+    // BSIM4: Stress parameters (SA/SB distance to STI)
+    let sa = param_value(&inst.params, &["sa"]).unwrap_or(0.0);
+    let sb = param_value(&inst.params, &["sb"]).unwrap_or(0.0);
+
     if let Some(x) = x {
         let vd = x.get(drain).copied().unwrap_or(0.0);
         let vg = x.get(gate).copied().unwrap_or(0.0);
         let vs = x.get(source).copied().unwrap_or(0.0);
         let vb = x.get(bulk).copied().unwrap_or(0.0);
 
-        // Call BSIM evaluator
+        // Use BSIM4 evaluator for Level 54, BSIM3 for others
+        if level == 54 {
+            // BSIM4: Full evaluation with stress and additional currents
+            let output = sim_devices::bsim::evaluate_mos_bsim4(
+                &params, w, l, vd, vg, vs, vb, temp, sa, sb
+            );
+
+            let gm = output.base.gm;
+            let gds = output.base.gds.max(gmin);
+            let gmbs = output.base.gmbs;
+            let ieq = output.base.ieq;
+
+            // Stamp gds (output conductance between drain and source)
+            ctx.add(drain, drain, gds);
+            ctx.add(source, source, gds);
+            ctx.add(drain, source, -gds);
+            ctx.add(source, drain, -gds);
+
+            // Stamp gm (transconductance: current controlled by Vgs)
+            ctx.add(drain, gate, gm);
+            ctx.add(drain, source, -gm);
+            ctx.add(source, gate, -gm);
+            ctx.add(source, source, gm);
+
+            // Stamp gmbs (body transconductance: current controlled by Vbs)
+            if gmbs.abs() > gmin * 0.01 {
+                ctx.add(drain, bulk, gmbs);
+                ctx.add(drain, source, -gmbs);
+                ctx.add(source, bulk, -gmbs);
+                ctx.add(source, source, gmbs);
+            }
+
+            // Stamp equivalent current source for Ids
+            ctx.add_rhs(drain, -ieq);
+            ctx.add_rhs(source, ieq);
+
+            // BSIM4: Substrate current (impact ionization)
+            // Isub flows from drain to bulk
+            if output.isub.abs() > gmin && output.gsub > gmin * 0.01 {
+                // Stamp gsub (substrate conductance)
+                ctx.add(drain, drain, output.gsub);
+                ctx.add(bulk, bulk, output.gsub);
+                ctx.add(drain, bulk, -output.gsub);
+                ctx.add(bulk, drain, -output.gsub);
+
+                // Equivalent current for Isub
+                let isub_eq = output.isub - output.gsub * (vd - vb);
+                ctx.add_rhs(drain, -isub_eq);
+                ctx.add_rhs(bulk, isub_eq);
+            }
+
+            // BSIM4: Gate tunneling currents
+            // Igs flows from gate to source
+            if output.igs.abs() > gmin && output.gigs > gmin * 0.01 {
+                ctx.add(gate, gate, output.gigs);
+                ctx.add(source, source, output.gigs);
+                ctx.add(gate, source, -output.gigs);
+                ctx.add(source, gate, -output.gigs);
+
+                let igs_eq = output.igs - output.gigs * (vg - vs);
+                ctx.add_rhs(gate, -igs_eq);
+                ctx.add_rhs(source, igs_eq);
+            }
+
+            // Igd flows from gate to drain
+            if output.igd.abs() > gmin && output.gigd > gmin * 0.01 {
+                ctx.add(gate, gate, output.gigd);
+                ctx.add(drain, drain, output.gigd);
+                ctx.add(gate, drain, -output.gigd);
+                ctx.add(drain, gate, -output.gigd);
+
+                let igd_eq = output.igd - output.gigd * (vg - vd);
+                ctx.add_rhs(gate, -igd_eq);
+                ctx.add_rhs(drain, igd_eq);
+            }
+
+            return Ok(());
+        }
+
+        // BSIM3 or Level 1: Use standard evaluator
         let output = sim_devices::bsim::evaluate_mos(
             &params, w, l, vd, vg, vs, vb, temp
         );
