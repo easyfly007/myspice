@@ -1,5 +1,7 @@
 # TRAN Waveform Output Implementation Plan
 
+**Status: ✅ COMPLETED (2026-01-28)**
+
 ## Overview
 
 Implement time-series waveform storage and output for transient (TRAN) analysis. Currently, TRAN analysis only stores the final simulation state. This enhancement will store voltage/current values at each accepted time step, enabling waveform visualization and analysis.

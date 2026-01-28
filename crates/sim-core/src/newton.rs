@@ -128,15 +128,17 @@ pub fn debug_dump_newton(result: &NewtonResult) {
 }
 
 pub fn debug_dump_newton_with_tag(tag: &str, result: &NewtonResult) {
-    println!(
-        "newton[{}]: converged={} iters={} norm={} reason={:?} msg={:?}",
-        tag,
-        result.converged,
-        result.iterations,
-        result.final_norm,
-        result.reason,
-        result.message
-    );
+    if std::env::var("MYSPICE_DEBUG").is_ok() {
+        println!(
+            "newton[{}]: converged={} iters={} norm={} reason={:?} msg={:?}",
+            tag,
+            result.converged,
+            result.iterations,
+            result.final_norm,
+            result.reason,
+            result.message
+        );
+    }
 }
 
 pub fn run_newton_with_stepping<FBuild, S>(

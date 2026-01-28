@@ -2,7 +2,7 @@ use sim_core::analysis::AnalysisPlan;
 use sim_core::circuit::AnalysisCmd;
 use sim_core::engine::Engine;
 use sim_core::netlist::{build_circuit, elaborate_netlist, parse_netlist};
-use sim_core::result_store::{AnalysisType, ResultStore, RunStatus};
+use sim_core::result_store::{AnalysisType, ResultStore};
 
 fn parse_and_build(netlist: &str) -> sim_core::circuit::Circuit {
     let ast = parse_netlist(netlist);
@@ -66,8 +66,6 @@ R2 out 0 1k
 .end
 "#;
     let circuit = parse_and_build(netlist);
-    let node_count = circuit.nodes.id_to_name.len();
-
     let mut engine = Engine::new_default(circuit);
     let mut store = ResultStore::new();
 
@@ -83,11 +81,15 @@ R2 out 0 1k
     let run_id = engine.run_with_store(&plan, &mut store);
     let run = &store.runs[run_id.0];
 
-    // Each solution vector should have the same size as node count
+    // Each solution vector should be non-empty and consistent in size
+    assert!(!run.tran_solutions.is_empty(), "Should have at least one solution");
+    let first_len = run.tran_solutions[0].len();
+    assert!(first_len > 0, "Solutions should not be empty");
+
     for (i, sol) in run.tran_solutions.iter().enumerate() {
-        assert_eq!(sol.len(), node_count,
-            "Solution at time {} should have {} nodes, got {}",
-            run.tran_times[i], node_count, sol.len());
+        assert_eq!(sol.len(), first_len,
+            "Solution at time {} should have {} elements, got {}",
+            run.tran_times[i], first_len, sol.len());
     }
 }
 

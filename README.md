@@ -580,9 +580,12 @@ cargo test --workspace --exclude sim-cli
 - ✅ DC 扫描 PSF 导出支持
 - ✅ 精度控制 (`--precision <N>`)
 
+**已完成 (2026-01-28):**
+- ✅ TRAN 波形时序存储（多点数据）
+- ✅ TRAN PSF 波形导出（时间序列格式）
+
 **待完成:**
 - [ ] AI 代理集成
-- [ ] 波形数据时序存储（TRAN 多点数据）
 - [ ] 更多输出格式（JSON、CSV）
 
 ### W4: 首版优化与稳定性完善 ⏳
@@ -602,10 +605,10 @@ cargo test --workspace --exclude sim-cli
 - [x] 输出精度控制 (`--precision`)
 - [x] TRAN 分析结果终端输出
 - [x] BSIM4 (Level 54) 完整实现（衬底电流、应力效应、栅隧穿）
+- [x] TRAN 波形时序存储与 PSF 导出
 
 ### 进行中
 - [ ] AI 代理集成与交互协议
-- [ ] 波形时序数据存储（TRAN 多点）
 
 ### 后续计划
 - [ ] 更完善的受控源语法（POLY 细节）
@@ -649,6 +652,16 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 详见 `docs/bsim_model.md`（包含 BSIM 模型概念、当前支持参数、简化计算与 stamp 说明）。
 
 ## 更新日志
+
+### 2026-01-28: TRAN 波形时序存储
+- TRAN 分析现在存储完整时间序列数据（每个接受的时间步）
+- 新增 `write_psf_tran()` 函数导出 TRAN 波形 PSF 文件
+- PSF 输出格式包含：时间点、各节点电压的列式数据
+- CLI 自动检测 TRAN 分析并使用波形格式导出
+- 修复 TRAN 分析初始条件问题（先运行 DC OP）
+- 新增防止无限循环的保护机制
+- 3 个新单元测试验证波形存储功能
+- 详细实现计划见 `docs/tran_waveform_plan.md`
 
 ### 2026-01-27: BSIM4 (Level 54) 模型
 - 完整实现 BSIM4 DC 模型（~600 行新代码）

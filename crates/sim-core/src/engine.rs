@@ -118,9 +118,16 @@ impl Engine {
 
     fn run_tran_result(&mut self) -> RunResult {
         let node_count = self.circuit.nodes.id_to_name.len();
-        let mut x = vec![0.0; node_count];
         let mut state = TransientState::default();
         self.solver.prepare(node_count);
+
+        // Run DC operating point first to establish initial conditions
+        let dc_result = self.run_dc_result(AnalysisType::Op);
+        let mut x = if matches!(dc_result.status, RunStatus::Converged) {
+            dc_result.solution
+        } else {
+            vec![0.0; node_count]
+        };
         let config = TimeStepConfig {
             tstep: 1e-6,
             tstop: 1e-5,
@@ -148,7 +155,16 @@ impl Engine {
         tran_times.push(step_state.time);
         tran_solutions.push(x.clone());
 
+        // Guard against infinite loops
+        let max_iterations = 1_000_000;
+        let mut iteration_count = 0;
+
         while step_state.time < config.tstop {
+            iteration_count += 1;
+            if iteration_count > max_iterations {
+                final_status = RunStatus::Failed;
+                break;
+            }
             let mut x_iter = x.clone();
             let gnd = self.circuit.nodes.gnd_id.0;
             let result = run_newton_with_stepping(&NewtonConfig::default(), &mut x_iter, |x, gmin, source_scale| {
@@ -174,7 +190,11 @@ impl Engine {
             debug_dump_newton_with_tag("tran", &result);
             if !result.converged {
                 step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
-                final_status = RunStatus::Failed;
+                // If time step is at minimum and still not converging, fail
+                if step_state.dt <= config.min_dt * 1.01 {
+                    final_status = RunStatus::Failed;
+                    break;
+                }
                 continue;
             }
 
