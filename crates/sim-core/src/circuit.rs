@@ -92,6 +92,10 @@ pub struct Instance {
     pub params: HashMap<String, String>,
     pub value: Option<String>,
     pub control: Option<String>,
+    /// AC analysis magnitude (for voltage/current sources)
+    pub ac_mag: Option<f64>,
+    /// AC analysis phase in degrees (for voltage/current sources)
+    pub ac_phase: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -116,6 +120,17 @@ impl InstanceTable {
     }
 }
 
+/// AC sweep type for frequency analysis
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AcSweepType {
+    /// Logarithmic sweep with N points per decade
+    Dec,
+    /// Logarithmic sweep with N points per octave
+    Oct,
+    /// Linear sweep with N total points
+    Lin,
+}
+
 #[derive(Debug, Clone)]
 pub enum AnalysisCmd {
     Op,
@@ -130,6 +145,12 @@ pub enum AnalysisCmd {
         tstop: f64,
         tstart: f64,
         tmax: f64,
+    },
+    Ac {
+        sweep_type: AcSweepType,
+        points: usize,
+        fstart: f64,
+        fstop: f64,
     },
 }
 

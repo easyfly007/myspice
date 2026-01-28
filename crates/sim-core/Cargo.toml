@@ -6,6 +6,7 @@ build = "build.rs"
 
 [dependencies]
 sim-devices = { path = "../sim-devices" }
+num-complex = "0.4"
 
 [features]
 klu = []

@@ -6,6 +6,7 @@ pub enum AnalysisType {
     Op,
     Dc,
     Tran,
+    Ac,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +32,10 @@ pub struct RunResult {
     pub sweep_values: Vec<f64>,
     /// DC sweep: solution vectors at each sweep point
     pub sweep_solutions: Vec<Vec<f64>>,
+    /// AC analysis: frequency points
+    pub ac_frequencies: Vec<f64>,
+    /// AC analysis: complex solutions at each frequency - (magnitude_dB, phase_degrees) for each node
+    pub ac_solutions: Vec<Vec<(f64, f64)>>,
 }
 
 #[derive(Debug, Clone)]

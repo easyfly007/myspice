@@ -24,6 +24,8 @@ fn circuit_tables_accept_entries() {
         params,
         value: Some("1k".to_string()),
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     });
 
     assert_eq!(circuit.nodes.id_to_name.len(), 3);

@@ -10,3 +10,5 @@ pub mod analysis;
 pub mod stamp;
 pub mod newton;
 pub mod psf;
+pub mod complex_mna;
+pub mod complex_solver;

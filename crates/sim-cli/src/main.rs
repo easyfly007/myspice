@@ -23,11 +23,15 @@ OPTIONS:
     -h, --help              Print help information
     -V, --version           Print version information
     -o, --psf <PATH>        Write results to PSF text file
-    -a, --analysis <TYPE>   Analysis type: op, dc, tran (default: from netlist or op)
+    -a, --analysis <TYPE>   Analysis type: op, dc, tran, ac (default: from netlist or op)
     --dc-source <NAME>      DC sweep source name
     --dc-start <VALUE>      DC sweep start voltage
     --dc-stop <VALUE>       DC sweep stop voltage
     --dc-step <VALUE>       DC sweep step size
+    --ac-type <TYPE>        AC sweep type: dec, oct, lin (default: dec)
+    --ac-points <N>         AC points per decade/octave or total (default: 10)
+    --ac-fstart <FREQ>      AC start frequency in Hz
+    --ac-fstop <FREQ>       AC stop frequency in Hz
     --precision <N>         Output precision (1-15 significant digits, default: 6)
 
 EXAMPLES:
@@ -35,7 +39,9 @@ EXAMPLES:
     sim-cli circuit.cir --psf out.psf            # Export to PSF file
     sim-cli circuit.cir -a dc --dc-source V1 \
         --dc-start 0 --dc-stop 5 --dc-step 0.1   # DC sweep
-    sim-cli circuit.cir -a tran                  # Transient analysis"#
+    sim-cli circuit.cir -a tran                  # Transient analysis
+    sim-cli circuit.cir -a ac --ac-type dec \
+        --ac-points 10 --ac-fstart 1 --ac-fstop 1meg  # AC analysis"#
     );
 }
 
@@ -52,6 +58,10 @@ fn main() {
     let mut dc_start: Option<f64> = None;
     let mut dc_stop: Option<f64> = None;
     let mut dc_step: Option<f64> = None;
+    let mut ac_type: Option<String> = None;
+    let mut ac_points: Option<usize> = None;
+    let mut ac_fstart: Option<f64> = None;
+    let mut ac_fstop: Option<f64> = None;
     let mut precision: usize = 6;
 
     while let Some(arg) = args.next() {
@@ -119,6 +129,34 @@ fn main() {
                     }
                 };
             }
+            "--ac-type" => {
+                let Some(value) = args.next() else {
+                    eprintln!("missing value for {}", arg);
+                    std::process::exit(2);
+                };
+                ac_type = Some(value.to_ascii_lowercase());
+            }
+            "--ac-points" => {
+                let Some(value) = args.next() else {
+                    eprintln!("missing value for {}", arg);
+                    std::process::exit(2);
+                };
+                ac_points = value.parse::<usize>().ok();
+            }
+            "--ac-fstart" => {
+                let Some(value) = args.next() else {
+                    eprintln!("missing value for {}", arg);
+                    std::process::exit(2);
+                };
+                ac_fstart = parse_frequency(&value);
+            }
+            "--ac-fstop" => {
+                let Some(value) = args.next() else {
+                    eprintln!("missing value for {}", arg);
+                    std::process::exit(2);
+                };
+                ac_fstop = parse_frequency(&value);
+            }
             _ => {
                 if netlist_path.is_none() {
                     netlist_path = Some(arg);
@@ -160,13 +198,19 @@ fn main() {
     }
 
     let circuit = build_circuit(&ast, &elab);
-    let (cmd, sweep) = select_analysis(&analysis, &circuit, dc_source, dc_start, dc_stop, dc_step);
+    let (cmd, sweep, ac_sweep) = select_analysis(
+        &analysis, &circuit,
+        dc_source, dc_start, dc_stop, dc_step,
+        ac_type, ac_points, ac_fstart, ac_fstop
+    );
 
     let mut engine = Engine::new_default(circuit);
     let mut store = ResultStore::new();
 
     if let Some(sweep) = sweep {
         run_dc_sweep(&mut engine, &mut store, cmd, sweep.clone(), psf_path.as_deref(), precision);
+    } else if let Some(ac) = ac_sweep {
+        run_ac_sweep(&mut engine, &mut store, cmd, ac, psf_path.as_deref(), precision);
     } else {
         let plan = AnalysisPlan { cmd };
         let run_id = engine.run_with_store(&plan, &mut store);
@@ -214,6 +258,14 @@ struct DcSweep {
     step: f64,
 }
 
+#[derive(Clone)]
+struct AcSweep {
+    sweep_type: sim_core::circuit::AcSweepType,
+    points: usize,
+    fstart: f64,
+    fstop: f64,
+}
+
 fn select_analysis(
     analysis: &Option<String>,
     circuit: &sim_core::circuit::Circuit,
@@ -221,12 +273,16 @@ fn select_analysis(
     dc_start: Option<f64>,
     dc_stop: Option<f64>,
     dc_step: Option<f64>,
-) -> (AnalysisCmd, Option<DcSweep>) {
+    ac_type: Option<String>,
+    ac_points: Option<usize>,
+    ac_fstart: Option<f64>,
+    ac_fstop: Option<f64>,
+) -> (AnalysisCmd, Option<DcSweep>, Option<AcSweep>) {
     let from_netlist = circuit.analysis.first().cloned();
     let analysis = analysis.as_deref();
 
     match analysis {
-        Some("op") => (AnalysisCmd::Op, None),
+        Some("op") => (AnalysisCmd::Op, None, None),
         Some("dc") => {
             let sweep = build_dc_sweep(dc_source, dc_start, dc_stop, dc_step)
                 .or_else(|| extract_dc_sweep(from_netlist));
@@ -242,6 +298,7 @@ fn select_analysis(
                     step: sweep.step,
                 },
                 Some(sweep),
+                None,
             )
         }
         Some("tran") => {
@@ -264,7 +321,25 @@ fn select_analysis(
                     tmax: 1e-5,
                 },
             };
-            (cmd, None)
+            (cmd, None, None)
+        }
+        Some("ac") => {
+            let ac = build_ac_sweep(ac_type, ac_points, ac_fstart, ac_fstop)
+                .or_else(|| extract_ac_sweep(from_netlist));
+            let Some(ac) = ac else {
+                eprintln!("ac analysis requires type/points/fstart/fstop or .ac in netlist");
+                std::process::exit(2);
+            };
+            (
+                AnalysisCmd::Ac {
+                    sweep_type: ac.sweep_type,
+                    points: ac.points,
+                    fstart: ac.fstart,
+                    fstop: ac.fstop,
+                },
+                None,
+                Some(ac),
+            )
         }
         _ => match from_netlist {
             Some(AnalysisCmd::Dc {
@@ -287,10 +362,34 @@ fn select_analysis(
                         step,
                     },
                     Some(sweep),
+                    None,
                 )
             }
-            Some(cmd) => (cmd, None),
-            None => (AnalysisCmd::Op, None),
+            Some(AnalysisCmd::Ac {
+                sweep_type,
+                points,
+                fstart,
+                fstop,
+            }) => {
+                let ac = AcSweep {
+                    sweep_type,
+                    points,
+                    fstart,
+                    fstop,
+                };
+                (
+                    AnalysisCmd::Ac {
+                        sweep_type,
+                        points,
+                        fstart,
+                        fstop,
+                    },
+                    None,
+                    Some(ac),
+                )
+            }
+            Some(cmd) => (cmd, None, None),
+            None => (AnalysisCmd::Op, None, None),
         },
     }
 }
@@ -326,6 +425,155 @@ fn extract_dc_sweep(cmd: Option<AnalysisCmd>) -> Option<DcSweep> {
             step,
         }),
         _ => None,
+    }
+}
+
+fn build_ac_sweep(
+    ac_type: Option<String>,
+    points: Option<usize>,
+    fstart: Option<f64>,
+    fstop: Option<f64>,
+) -> Option<AcSweep> {
+    let fstart = fstart?;
+    let fstop = fstop?;
+    let points = points.unwrap_or(10);
+    let sweep_type = match ac_type.as_deref() {
+        Some("oct") => sim_core::circuit::AcSweepType::Oct,
+        Some("lin") => sim_core::circuit::AcSweepType::Lin,
+        _ => sim_core::circuit::AcSweepType::Dec,
+    };
+    Some(AcSweep {
+        sweep_type,
+        points,
+        fstart,
+        fstop,
+    })
+}
+
+fn extract_ac_sweep(cmd: Option<AnalysisCmd>) -> Option<AcSweep> {
+    match cmd {
+        Some(AnalysisCmd::Ac {
+            sweep_type,
+            points,
+            fstart,
+            fstop,
+        }) => Some(AcSweep {
+            sweep_type,
+            points,
+            fstart,
+            fstop,
+        }),
+        _ => None,
+    }
+}
+
+fn parse_frequency(s: &str) -> Option<f64> {
+    let lower = s.to_ascii_lowercase();
+    let trimmed = lower.trim();
+
+    // Handle common frequency suffixes
+    let (num_str, multiplier) = if trimmed.ends_with("meg") {
+        (&trimmed[..trimmed.len() - 3], 1e6)
+    } else if trimmed.ends_with("hz") {
+        let inner = &trimmed[..trimmed.len() - 2];
+        if inner.ends_with("g") {
+            (&inner[..inner.len() - 1], 1e9)
+        } else if inner.ends_with("m") {
+            (&inner[..inner.len() - 1], 1e-3)
+        } else if inner.ends_with("k") {
+            (&inner[..inner.len() - 1], 1e3)
+        } else {
+            (inner, 1.0)
+        }
+    } else {
+        let (value_part, suffix) = trimmed.split_at(trimmed.len().saturating_sub(1));
+        match suffix {
+            "g" => (value_part, 1e9),
+            "m" => (value_part, 1e6), // For frequency, 'm' often means mega
+            "k" => (value_part, 1e3),
+            _ => (trimmed, 1.0),
+        }
+    };
+
+    num_str.parse::<f64>().ok().map(|n| n * multiplier)
+}
+
+fn run_ac_sweep(
+    engine: &mut Engine,
+    store: &mut ResultStore,
+    cmd: AnalysisCmd,
+    ac: AcSweep,
+    psf_path: Option<&Path>,
+    precision: usize,
+) {
+    let sweep_type_str = match ac.sweep_type {
+        sim_core::circuit::AcSweepType::Dec => "DEC",
+        sim_core::circuit::AcSweepType::Oct => "OCT",
+        sim_core::circuit::AcSweepType::Lin => "LIN",
+    };
+    println!(
+        "ac sweep: {} {} points from {} Hz to {} Hz",
+        sweep_type_str, ac.points, ac.fstart, ac.fstop
+    );
+
+    let plan = AnalysisPlan { cmd };
+    let run_id = engine.run_with_store(&plan, store);
+    let run = &store.runs[run_id.0];
+
+    if !matches!(run.status, RunStatus::Converged) {
+        eprintln!(
+            "ac analysis failed: status={:?} message={:?}",
+            run.status, run.message
+        );
+        std::process::exit(1);
+    }
+
+    // Print results
+    println!("AC analysis: {} frequency points", run.ac_frequencies.len());
+
+    // Print header
+    print!("{:>14}", "Frequency");
+    for name in &run.node_names {
+        if name != "0" {
+            print!("  {:>12}  {:>12}", format!("VM({})", name), format!("VP({})", name));
+        }
+    }
+    println!();
+
+    // Print data (first and last few points)
+    let n = run.ac_frequencies.len();
+    let show_all = n <= 20;
+    for (i, freq) in run.ac_frequencies.iter().enumerate() {
+        if show_all || i < 5 || i >= n - 5 {
+            print!("{:>14.6e}", freq);
+            if let Some(solution) = run.ac_solutions.get(i) {
+                for (node_idx, name) in run.node_names.iter().enumerate() {
+                    if name != "0" {
+                        if let Some((mag_db, phase_deg)) = solution.get(node_idx) {
+                            print!("  {:>12.4}  {:>12.4}", mag_db, phase_deg);
+                        }
+                    }
+                }
+            }
+            println!();
+        } else if i == 5 {
+            println!("  ... ({} more points) ...", n - 10);
+        }
+    }
+
+    // Write PSF output if requested
+    if let Some(path) = psf_path {
+        if let Err(err) = sim_core::psf::write_psf_ac(
+            &run.ac_frequencies,
+            &run.node_names,
+            &run.ac_solutions,
+            path,
+            precision,
+        ) {
+            eprintln!("failed to write psf: {}", err);
+            std::process::exit(1);
+        }
+        println!("psf written: {}", path.display());
     }
 }
 

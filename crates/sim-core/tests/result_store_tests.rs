@@ -14,6 +14,8 @@ fn result_store_adds_run() {
         sweep_var: None,
         sweep_values: Vec::new(),
         sweep_solutions: Vec::new(),
+        ac_frequencies: Vec::new(),
+        ac_solutions: Vec::new(),
     };
     let id = store.add_run(run);
     assert_eq!(id.0, 0);

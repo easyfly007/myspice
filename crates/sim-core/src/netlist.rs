@@ -70,6 +70,7 @@ pub enum ControlKind {
     Op,
     Dc,
     Tran,
+    Ac,
     End,
     Other,
 }
@@ -531,6 +532,7 @@ fn map_control_kind(command: &str) -> ControlKind {
         ".op" => ControlKind::Op,
         ".dc" => ControlKind::Dc,
         ".tran" => ControlKind::Tran,
+        ".ac" => ControlKind::Ac,
         ".end" => ControlKind::End,
         _ => ControlKind::Other,
     }
@@ -942,6 +944,30 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
                         });
                     }
                 }
+                ControlKind::Ac => {
+                    // Parse .ac DEC|OCT|LIN points fstart fstop
+                    if ctrl.args.len() >= 4 {
+                        let sweep_type = match ctrl.args[0].to_ascii_uppercase().as_str() {
+                            "DEC" => crate::circuit::AcSweepType::Dec,
+                            "OCT" => crate::circuit::AcSweepType::Oct,
+                            "LIN" => crate::circuit::AcSweepType::Lin,
+                            _ => crate::circuit::AcSweepType::Dec,
+                        };
+                        let points = ctrl.args[1].parse::<usize>().unwrap_or(10);
+                        let fstart = parse_number_with_suffix(&ctrl.args[2])
+                            .or_else(|| ctrl.args[2].parse().ok())
+                            .unwrap_or(1.0);
+                        let fstop = parse_number_with_suffix(&ctrl.args[3])
+                            .or_else(|| ctrl.args[3].parse().ok())
+                            .unwrap_or(1e6);
+                        circuit.analysis.push(AnalysisCmd::Ac {
+                            sweep_type,
+                            points,
+                            fstart,
+                            fstop,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -1005,6 +1031,10 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
             params.insert(param.key.to_ascii_lowercase(), param.value.clone());
         }
 
+        // Parse AC specs from extras for voltage/current sources
+        // Format: AC mag [phase] or AC(mag, phase)
+        let (ac_mag, ac_phase) = parse_ac_spec(&device.extras);
+
         circuit.instances.insert(Instance {
             name: device.name.clone(),
             kind,
@@ -1013,6 +1043,8 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
             params,
             value: device.value.clone(),
             control: device.control.clone(),
+            ac_mag,
+            ac_phase,
         });
     }
 
@@ -1605,6 +1637,55 @@ fn eval_function(name: &str, args: &[f64]) -> Option<f64> {
         }
         _ => None,
     }
+}
+
+/// Parse AC specification from device extras.
+/// Handles formats:
+/// - AC mag phase (e.g., "AC 1 45")
+/// - AC mag (phase defaults to 0)
+/// - AC(mag, phase) or AC(mag)
+fn parse_ac_spec(extras: &[String]) -> (Option<f64>, Option<f64>) {
+    let mut i = 0;
+    while i < extras.len() {
+        let token = &extras[i];
+        let upper = token.to_ascii_uppercase();
+
+        // Handle AC(mag, phase) or AC(mag) format
+        if upper.starts_with("AC(") && upper.ends_with(')') {
+            let inner = &token[3..token.len() - 1];
+            let parts: Vec<&str> = inner.split(',').map(|s| s.trim()).collect();
+            if !parts.is_empty() {
+                let mag = parse_number_with_suffix(parts[0]);
+                let phase = if parts.len() > 1 {
+                    parse_number_with_suffix(parts[1])
+                } else {
+                    Some(0.0)
+                };
+                return (mag, phase);
+            }
+        }
+
+        // Handle AC mag [phase] format
+        if upper == "AC" {
+            // Look for magnitude in next token
+            if i + 1 < extras.len() {
+                let mag = parse_number_with_suffix(&extras[i + 1]);
+                if mag.is_some() {
+                    // Look for optional phase
+                    let phase = if i + 2 < extras.len() {
+                        parse_number_with_suffix(&extras[i + 2])
+                    } else {
+                        Some(0.0)
+                    };
+                    return (mag, phase);
+                }
+            }
+        }
+
+        i += 1;
+    }
+
+    (None, None)
 }
 
 pub fn debug_dump_ast(ast: &NetlistAst) {

@@ -34,6 +34,8 @@ fn mna_builder_allocates_aux_for_voltage() {
         params: HashMap::new(),
         value: Some("1".to_string()),
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     };
     let stamp = InstanceStamp { instance };
     let mut ctx = builder.context();
@@ -54,6 +56,8 @@ fn dc_op_mna_entries_for_r_and_i() {
         params: HashMap::new(),
         value: Some("1k".to_string()),
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     };
     let i1 = Instance {
         name: "I1".to_string(),
@@ -63,6 +67,8 @@ fn dc_op_mna_entries_for_r_and_i() {
         params: HashMap::new(),
         value: Some("1m".to_string()),
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     };
 
     let mut ctx = builder.context();
@@ -89,6 +95,8 @@ fn inductor_dc_stamp_as_short() {
         params: HashMap::new(),
         value: Some("1m".to_string()),
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: l1 }.stamp_dc(&mut ctx, None).unwrap();
@@ -106,6 +114,8 @@ fn source_scale_applies_to_current() {
         params: HashMap::new(),
         value: Some("1m".to_string()),
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     };
     let mut ctx = builder.context_with(0.0, 0.5);
     InstanceStamp { instance: i1 }.stamp_dc(&mut ctx, None).unwrap();
@@ -124,6 +134,8 @@ fn gmin_applies_to_diode_stamp() {
         params: HashMap::new(),
         value: None,
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     };
     let mut ctx = builder.context_with(1e-6, 1.0);
     InstanceStamp { instance: d1 }.stamp_dc(&mut ctx, None).unwrap();
@@ -142,6 +154,8 @@ fn diode_stamp_uses_solution_when_provided() {
         params: HashMap::new(),
         value: None,
         control: None,
+        ac_mag: None,
+        ac_phase: None,
     };
     let mut ctx = builder.context_with(1e-12, 1.0);
     let x = vec![0.0, 0.7];
