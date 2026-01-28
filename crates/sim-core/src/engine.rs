@@ -111,6 +111,8 @@ impl Engine {
             sweep_var: None,
             sweep_values: Vec::new(),
             sweep_solutions: Vec::new(),
+            tran_times: Vec::new(),
+            tran_solutions: Vec::new(),
         }
     }
 
@@ -137,6 +139,14 @@ impl Engine {
             accepted: true,
         };
         let mut final_status = RunStatus::Converged;
+
+        // Waveform storage for time-series output
+        let mut tran_times: Vec<f64> = Vec::new();
+        let mut tran_solutions: Vec<Vec<f64>> = Vec::new();
+
+        // Store initial condition at t=0
+        tran_times.push(step_state.time);
+        tran_solutions.push(x.clone());
 
         while step_state.time < config.tstop {
             let mut x_iter = x.clone();
@@ -177,6 +187,11 @@ impl Engine {
                 step_state.time += step_state.dt;
                 step_state.step += 1;
                 step_state.last_dt = step_state.dt;
+
+                // Store accepted time point for waveform output
+                tran_times.push(step_state.time);
+                tran_solutions.push(x.clone());
+
                 if step_state.dt < config.max_dt {
                     step_state.dt = (step_state.dt * 1.5).min(config.max_dt);
                 }
@@ -200,6 +215,8 @@ impl Engine {
             sweep_var: None,
             sweep_values: Vec::new(),
             sweep_solutions: Vec::new(),
+            tran_times,
+            tran_solutions,
         }
     }
 
@@ -227,6 +244,8 @@ impl Engine {
                 sweep_var: Some(source.to_string()),
                 sweep_values: Vec::new(),
                 sweep_solutions: Vec::new(),
+                tran_times: Vec::new(),
+                tran_solutions: Vec::new(),
             };
         }
         let source_idx = source_idx.unwrap();
@@ -321,6 +340,8 @@ impl Engine {
             sweep_var: Some(source.to_string()),
             sweep_values,
             sweep_solutions,
+            tran_times: Vec::new(),
+            tran_solutions: Vec::new(),
         }
     }
 }
