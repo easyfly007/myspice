@@ -1,170 +1,154 @@
-# TRAN Waveform Output Implementation Plan
+# TRAN Waveform Storage Implementation
 
-**Status: ✅ COMPLETED (2026-01-28)**
+**Status: ✅ COMPLETED (2026-01-29)**
 
 ## Overview
 
-Implement time-series waveform storage and output for transient (TRAN) analysis. Currently, TRAN analysis only stores the final simulation state. This enhancement will store voltage/current values at each accepted time step, enabling waveform visualization and analysis.
+This document describes the implementation of time-series waveform storage for transient (TRAN) analysis in MySpice. The implementation enables storing voltage values at each accepted time step during simulation, allowing for waveform visualization and analysis.
 
-## Current State
+## Implementation Summary
 
-### What Exists
-- `run_tran_result()` in `engine.rs` performs transient simulation with adaptive time stepping
-- `RunResult` struct stores only final `solution: Vec<f64>`
-- `write_psf_text()` outputs single-point results
-- DC sweep already has multi-point storage (`sweep_values`, `sweep_solutions`)
+### What Was Implemented
 
-### What's Missing
-- Time-series storage during TRAN simulation
-- PSF output format for TRAN waveforms
-- CLI integration for TRAN waveform export
+1. **Data Structure Changes** (`result_store.rs`)
+   - Added `tran_times: Vec<f64>` - stores time points at each accepted step
+   - Added `tran_solutions: Vec<Vec<f64>>` - stores solution vectors at each time point
 
-## Data Structure Changes
+2. **Engine Changes** (`engine.rs`)
+   - New function `run_tran_result_with_params()` that accepts TRAN parameters (tstep, tstop, tstart, tmax)
+   - DC operating point computation at t=0 before time stepping
+   - Waveform collection at each accepted time step
+   - Proper initialization of transient state from DC solution
 
-### File: `crates/sim-core/src/result_store.rs`
+3. **PSF Output** (`psf.rs`)
+   - `write_psf_tran()` function for waveform export
+   - Columnar format with time as first column
+   - Support for configurable precision
 
-Add new fields to `RunResult`:
+## Technical Details
 
+### Run Flow
+
+```
+1. Parse netlist and build circuit
+2. Create Engine with circuit
+3. Call run_with_store() with AnalysisPlan
+4. For TRAN:
+   a. Compute initial DC operating point (t=0)
+   b. Store initial time and solution
+   c. Time stepping loop:
+      - Newton iteration for each time step
+      - If converged and error acceptable:
+        - Accept step, store time and solution
+        - Increase time step (adaptive)
+      - Else: reduce time step and retry
+5. Return RunResult with tran_times and tran_solutions
+```
+
+### Key Code Sections
+
+#### result_store.rs
 ```rust
 pub struct RunResult {
     // ... existing fields ...
 
-    /// TRAN analysis: time points at each accepted step
+    /// TRAN analysis: time points
     pub tran_times: Vec<f64>,
     /// TRAN analysis: solution vectors at each time point
     pub tran_solutions: Vec<Vec<f64>>,
 }
 ```
 
-Initialize these as empty `Vec::new()` for non-TRAN analyses.
-
-## Engine Changes
-
-### File: `crates/sim-core/src/engine.rs`
-
-Modify `run_tran_result()` to collect waveform data:
-
+#### engine.rs
 ```rust
-fn run_tran_result(&mut self) -> RunResult {
-    // ... existing setup ...
+fn run_tran_result_with_params(
+    &mut self,
+    tstep: f64,
+    tstop: f64,
+    tstart: f64,
+    tmax: f64,
+) -> RunResult {
+    // ... setup ...
 
-    // New: waveform storage
+    // Waveform storage vectors
     let mut tran_times: Vec<f64> = Vec::new();
     let mut tran_solutions: Vec<Vec<f64>> = Vec::new();
 
-    // Store initial condition (t=0)
-    tran_times.push(step_state.time);
+    // Run initial DC operating point
+    // ...
+
+    // Store initial point (t=tstart)
+    tran_times.push(config.tstart);
     tran_solutions.push(x.clone());
 
+    // Time stepping loop
     while step_state.time < config.tstop {
-        // ... existing Newton iteration ...
+        // ... Newton iteration ...
 
         if accept {
-            x = x_iter;
-            update_transient_state(...);
-            step_state.time += step_state.dt;
-
-            // New: store accepted time point
+            // Store accepted time point and solution
             tran_times.push(step_state.time);
             tran_solutions.push(x.clone());
-
-            // ... rest of existing code ...
         }
     }
 
     RunResult {
-        // ... existing fields ...
+        // ...
         tran_times,
         tran_solutions,
     }
 }
 ```
 
-### Output Point Selection
+## Usage
 
-For long simulations, storing every accepted step may produce excessive data. Consider:
+### CLI Usage
+```bash
+# Run TRAN analysis with PSF output
+cargo run -p sim-cli -- tests/fixtures/netlists/rc_step.cir -a tran -o /tmp/rc.psf
 
-1. **Store all points** (default): Simple, accurate, may be large
-2. **Fixed interval output**: Store only at user-specified intervals (e.g., every `tstep`)
-3. **Adaptive storage**: Store at accepted steps but limit total points
+# With custom precision
+cargo run -p sim-cli -- tests/fixtures/netlists/rc_step.cir -a tran -o /tmp/rc.psf --precision 8
+```
 
-Recommendation: Start with storing all accepted points. Add optional decimation later if needed.
-
-## PSF Output
-
-### File: `crates/sim-core/src/psf.rs`
-
-Add new function `write_psf_tran()`:
-
+### API Usage
 ```rust
-/// Write TRAN analysis waveform results to PSF text format.
-pub fn write_psf_tran(
-    times: &[f64],
-    node_names: &[String],
-    solutions: &[Vec<f64>],
-    path: &Path,
-    precision: usize,
-) -> std::io::Result<()> {
-    let mut out = String::new();
+use sim_core::analysis::AnalysisPlan;
+use sim_core::circuit::AnalysisCmd;
+use sim_core::engine::Engine;
+use sim_core::result_store::ResultStore;
 
-    // Header
-    out.push_str("PSF_TEXT\n");
-    out.push_str(&format!("# Generated by MySpice v{}\n", VERSION));
-    out.push_str(&format!("# Date: {}\n", chrono_lite_now()));
-    out.push('\n');
+let circuit = /* parse and build circuit */;
+let mut engine = Engine::new_default(circuit);
+let mut store = ResultStore::new();
 
-    // TRAN info section
-    out.push_str("[Transient Analysis]\n");
-    out.push_str(&format!("points = {}\n", times.len()));
-    if let (Some(&tstart), Some(&tstop)) = (times.first(), times.last()) {
-        out.push_str(&format!("tstart = {:e}\n", tstart));
-        out.push_str(&format!("tstop = {:e}\n", tstop));
-    }
-    out.push('\n');
+let plan = AnalysisPlan {
+    cmd: AnalysisCmd::Tran {
+        tstep: 1e-6,
+        tstop: 1e-5,
+        tstart: 0.0,
+        tmax: 1e-5,
+    },
+};
 
-    // Signal names section
-    out.push_str("[Signals]\n");
-    out.push_str("time\n");
-    for name in node_names {
-        out.push_str(&format!("V({})\n", name));
-    }
-    out.push('\n');
+let run_id = engine.run_with_store(&plan, &mut store);
+let run = &store.runs[run_id.0];
 
-    // Data section with columnar format
-    out.push_str("[Data]\n");
-
-    // Header row
-    let col_width = precision + 8;
-    out.push_str(&format!("{:>width$}", "time", width = col_width));
-    for name in node_names {
-        out.push_str(&format!("  {:>width$}", format!("V({})", name), width = col_width));
-    }
-    out.push('\n');
-
-    // Data rows
-    for (i, time) in times.iter().enumerate() {
-        out.push_str(&format!("{:>width$.prec$e}", time, width = col_width, prec = precision));
-        if let Some(solution) = solutions.get(i) {
-            for val in solution {
-                out.push_str(&format!("  {:>width$.prec$e}", val, width = col_width, prec = precision));
-            }
-        }
-        out.push('\n');
-    }
-
-    fs::write(path, out)
+// Access waveform data
+for (i, time) in run.tran_times.iter().enumerate() {
+    let solution = &run.tran_solutions[i];
+    println!("t={}: {:?}", time, solution);
 }
 ```
 
-### PSF Output Example
-
+### PSF Output Format
 ```
 PSF_TEXT
 # Generated by MySpice v0.1.0
-# Date: 2026-01-28T10:00:00Z
+# Date: 2026-01-29T10:00:00Z
 
 [Transient Analysis]
-points = 101
+points = 11
 tstart = 0.000000e0
 tstop = 1.000000e-5
 
@@ -176,164 +160,47 @@ V(out)
 
 [Data]
         time          V(0)         V(in)        V(out)
-  0.000000e0   0.000000e0   1.000000e0   0.000000e0
-  1.000000e-7   0.000000e0   1.000000e0   6.321206e-1
-  2.000000e-7   0.000000e0   1.000000e0   8.646647e-1
+  0.000000e0   0.000000e0   1.000000e0   5.000000e-1
+  1.000000e-6   0.000000e0   1.000000e0   5.000000e-1
   ...
 ```
 
-## CLI Changes
+## Test Coverage
 
-### File: `crates/sim-cli/src/main.rs`
+Three test cases in `crates/sim-core/tests/tran_waveform_tests.rs`:
 
-Modify the TRAN result handling to use waveform output:
+1. **tran_waveform_stores_multiple_time_points**
+   - Verifies multiple time points are stored
+   - Checks time starts at 0
+   - Verifies monotonically increasing time
 
-```rust
-match run.analysis {
-    AnalysisType::Tran => {
-        println!("tran status: {:?} points={}", run.status, run.tran_times.len());
+2. **tran_waveform_solution_has_correct_nodes**
+   - Verifies solution vectors are non-empty
+   - Checks consistent solution size across time points
 
-        // Print summary (first and last few points)
-        if !run.tran_times.is_empty() {
-            println!("Time range: {:e} to {:e}",
-                run.tran_times.first().unwrap(),
-                run.tran_times.last().unwrap());
-        }
+3. **tran_psf_output_format**
+   - Tests PSF file generation
+   - Verifies format sections (header, signals, data)
 
-        // Print final values
-        println!("Final values:");
-        for (idx, name) in run.node_names.iter().enumerate() {
-            let value = run.solution.get(idx).copied().unwrap_or(0.0);
-            println!("  V({}) = {:.*e}", name, precision, value);
-        }
+## Memory Considerations
 
-        // Write PSF waveform if requested
-        if let Some(path) = psf_path {
-            if let Err(err) = crate::psf::write_psf_tran(
-                &run.tran_times,
-                &run.node_names,
-                &run.tran_solutions,
-                &path,
-                precision,
-            ) {
-                eprintln!("failed to write psf: {}", err);
-                std::process::exit(1);
-            }
-            println!("psf written: {}", path.display());
-        }
-    }
-    // ... other analysis types ...
-}
-```
-
-## API Changes (Optional)
-
-### File: `crates/sim-api/src/schema.rs`
-
-Add waveform endpoint response:
-
-```rust
-#[derive(Serialize)]
-pub struct TranWaveformResponse {
-    pub run_id: usize,
-    pub times: Vec<f64>,
-    pub signals: HashMap<String, Vec<f64>>,
-}
-```
-
-### Endpoint: `GET /v1/runs/{run_id}/waveform`
-
-Returns time-series data for specified signals:
-- Query param: `signal=V(out)` or `signal=all`
-- Returns JSON with time array and voltage arrays
-
-## Implementation Steps
-
-### Step 1: Update Data Structures
-1. Add `tran_times` and `tran_solutions` fields to `RunResult`
-2. Initialize as empty vectors in all `RunResult` constructors
-3. Update any existing tests that construct `RunResult`
-
-### Step 2: Modify Engine
-1. Add waveform collection in `run_tran_result()`
-2. Store initial condition at t=0
-3. Store solution at each accepted time step
-4. Populate new fields in returned `RunResult`
-
-### Step 3: Add PSF TRAN Output
-1. Create `write_psf_tran()` function in `psf.rs`
-2. Format: columnar with time as sweep variable
-3. Follow existing PSF style conventions
-
-### Step 4: Update CLI
-1. Detect TRAN analysis in result handling
-2. Call `write_psf_tran()` instead of `write_psf_text()` for TRAN
-3. Print summary info (point count, time range)
-
-### Step 5: Add Tests
-1. Unit test: `write_psf_tran()` format correctness
-2. Integration test: RC circuit transient response
-3. Verify waveform values match expected behavior
-
-### Step 6: Update Documentation
-1. Update README with TRAN waveform examples
-2. Add CLI usage example for TRAN PSF export
-
-## Test Plan
-
-### Test Case 1: RC Circuit Step Response
-```spice
-* RC lowpass step response
-V1 in 0 DC 1
-R1 in out 1k
-C1 out 0 1u
-.tran 1u 10m
-.end
-```
-
-Expected: Exponential rise with τ = RC = 1ms
-
-### Test Case 2: Verify PSF Output
-```bash
-cargo run -p sim-cli -- rc_step.cir -a tran -o /tmp/rc_tran.psf
-```
-
-Verify:
-- PSF file contains time column
-- PSF file contains V(out) column
-- Values show exponential charging behavior
-
-### Test Case 3: Memory Usage
-For long simulations, verify memory usage is acceptable:
-- 10,000 time points × 10 nodes × 8 bytes = ~800 KB (acceptable)
-- 1,000,000 points would be ~80 MB (may need decimation option)
+Waveform storage memory usage:
+- 10,000 time points × 10 nodes × 8 bytes ≈ 800 KB (acceptable)
+- 1,000,000 points would be ~80 MB (may need decimation option for very long simulations)
 
 ## Future Enhancements
 
-1. **Output decimation**: `--tran-points <N>` to limit stored points
-2. **Signal selection**: `--tran-signals V(out),V(in)` to store only selected nodes
-3. **Binary PSF**: Compressed binary format for large waveforms
-4. **Streaming output**: Write points as simulation progresses (for very long runs)
-5. **Current probes**: Store branch currents (I(R1), I(V1)) in addition to voltages
+- [ ] Output decimation: `--tran-points <N>` to limit stored points
+- [ ] Signal selection: `--tran-signals V(out),V(in)` to store only selected nodes
+- [ ] Binary PSF format for large waveforms
+- [ ] Current probes: Store branch currents (I(R1), I(V1))
+- [ ] Streaming output for very long simulations
 
-## Files to Modify Summary
+## Files Modified
 
 | File | Changes |
 |------|---------|
-| `crates/sim-core/src/result_store.rs` | Add `tran_times`, `tran_solutions` fields |
-| `crates/sim-core/src/engine.rs` | Collect waveform data in `run_tran_result()` |
-| `crates/sim-core/src/psf.rs` | Add `write_psf_tran()` function |
-| `crates/sim-core/src/lib.rs` | Export new function if needed |
-| `crates/sim-cli/src/main.rs` | Call `write_psf_tran()` for TRAN results |
-| `crates/sim-core/tests/tran_tests.rs` | Add waveform storage tests |
-
-## Estimated Effort
-
-- Data structures: ~30 lines
-- Engine changes: ~20 lines
-- PSF output: ~60 lines
-- CLI changes: ~30 lines
-- Tests: ~100 lines
-- Documentation: ~50 lines
-
-Total: ~290 lines of code
+| `crates/sim-core/src/result_store.rs` | Added `tran_times`, `tran_solutions` fields |
+| `crates/sim-core/src/engine.rs` | New `run_tran_result_with_params()` with waveform collection |
+| `crates/sim-core/tests/tran_waveform_tests.rs` | Test cases for waveform storage |
+| `crates/sim-core/tests/psf_tests.rs` | Updated RunResult constructor |

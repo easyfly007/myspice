@@ -44,6 +44,10 @@ pub struct DeviceStmt {
     pub poly: Option<PolySpec>,
     pub raw: String,
     pub line: usize,
+    /// AC analysis magnitude (for voltage/current sources)
+    pub ac_mag: Option<f64>,
+    /// AC analysis phase in degrees (for voltage/current sources)
+    pub ac_phase: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -283,6 +287,9 @@ fn parse_statement(
         errors,
     );
 
+    // Extract AC parameters for V/I sources (e.g., "AC 1 0" means ac_mag=1, ac_phase=0)
+    let (ac_mag, ac_phase) = extract_ac_params(&kind, &args);
+
     statements.push(Stmt::Device(DeviceStmt {
         name: first.to_string(),
         kind,
@@ -295,6 +302,8 @@ fn parse_statement(
         poly,
         raw: line.to_string(),
         line: line_no,
+        ac_mag,
+        ac_phase,
     }));
 }
 
@@ -1013,6 +1022,8 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
             params,
             value: device.value.clone(),
             control: device.control.clone(),
+            ac_mag: device.ac_mag,
+            ac_phase: device.ac_phase,
         });
     }
 
@@ -1259,6 +1270,32 @@ fn extract_control_name(kind: &DeviceKind, args: &[String]) -> Option<String> {
         },
         _ => None,
     }
+}
+
+/// Extract AC magnitude and phase from V/I source arguments.
+/// Syntax: `V1 in 0 DC 1 AC <mag> [<phase>]`
+fn extract_ac_params(kind: &DeviceKind, args: &[String]) -> (Option<f64>, Option<f64>) {
+    if !matches!(kind, DeviceKind::V | DeviceKind::I) {
+        return (None, None);
+    }
+
+    // Find the AC keyword and extract following values
+    let mut ac_idx = None;
+    for (i, arg) in args.iter().enumerate() {
+        if arg.to_ascii_uppercase() == "AC" {
+            ac_idx = Some(i);
+            break;
+        }
+    }
+
+    let Some(idx) = ac_idx else {
+        return (None, None);
+    };
+
+    let mag = args.get(idx + 1).and_then(|s| parse_number_with_suffix(s).or_else(|| s.parse().ok()));
+    let phase = args.get(idx + 2).and_then(|s| parse_number_with_suffix(s).or_else(|| s.parse().ok()));
+
+    (mag, phase)
 }
 
 fn has_waveform(extras: &[String]) -> bool {

@@ -52,7 +52,9 @@ impl Engine {
 
     pub fn run_with_store(&mut self, plan: &AnalysisPlan, store: &mut ResultStore) -> RunId {
         let result = match &plan.cmd {
-            crate::circuit::AnalysisCmd::Tran { .. } => self.run_tran_result(),
+            crate::circuit::AnalysisCmd::Tran { tstep, tstop, tstart, tmax } => {
+                self.run_tran_result_with_params(*tstep, *tstop, *tstart, *tmax)
+            }
             crate::circuit::AnalysisCmd::Dc { source, start, stop, step } => {
                 self.run_dc_sweep_result(source, *start, *stop, *step)
             }
@@ -66,7 +68,8 @@ impl Engine {
     }
 
     pub fn run_tran(&mut self) {
-        let _ = self.run_tran_result();
+        // Use default parameters for standalone run
+        let _ = self.run_tran_result_with_params(1e-6, 1e-5, 0.0, 1e-5);
     }
 
     fn run_dc_result(&mut self, analysis: AnalysisType) -> RunResult {
@@ -111,36 +114,110 @@ impl Engine {
             sweep_var: None,
             sweep_values: Vec::new(),
             sweep_solutions: Vec::new(),
+            tran_times: Vec::new(),
+            tran_solutions: Vec::new(),
         }
     }
 
-    fn run_tran_result(&mut self) -> RunResult {
+    /// Run TRAN analysis with specified parameters and store waveform data
+    ///
+    /// This function performs transient analysis from `tstart` to `tstop` using
+    /// adaptive time stepping. It stores the solution at each accepted time point
+    /// in `tran_times` and `tran_solutions`.
+    ///
+    /// # Arguments
+    /// * `tstep` - Suggested time step for output
+    /// * `tstop` - Stop time
+    /// * `tstart` - Start time (usually 0)
+    /// * `tmax` - Maximum internal time step
+    ///
+    /// # Returns
+    /// RunResult containing:
+    /// - `tran_times`: Vector of time points where solutions were computed
+    /// - `tran_solutions`: Vector of solution vectors at each time point
+    /// - `solution`: Final solution at tstop
+    fn run_tran_result_with_params(
+        &mut self,
+        tstep: f64,
+        tstop: f64,
+        tstart: f64,
+        tmax: f64,
+    ) -> RunResult {
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
         let mut state = TransientState::default();
         self.solver.prepare(node_count);
+
         let config = TimeStepConfig {
-            tstep: 1e-6,
-            tstop: 1e-5,
-            tstart: 0.0,
-            tmax: 1e-5,
-            min_dt: 1e-9,
-            max_dt: 1e-4,
+            tstep,
+            tstop,
+            tstart,
+            tmax,
+            min_dt: tstep * 1e-6,  // Minimum step is 1e-6 of tstep
+            max_dt: tmax,
             abs_tol: 1e-9,
             rel_tol: 1e-6,
         };
+
         let mut step_state = TimeStepState {
             time: config.tstart,
             step: 0,
-            dt: config.tstep,
+            dt: config.tstep.min(config.tmax),
             last_dt: config.tstep,
             accepted: true,
         };
-        let mut final_status = RunStatus::Converged;
 
+        let mut final_status = RunStatus::Converged;
+        let gnd = self.circuit.nodes.gnd_id.0;
+
+        // Waveform storage vectors
+        let mut tran_times: Vec<f64> = Vec::new();
+        let mut tran_solutions: Vec<Vec<f64>> = Vec::new();
+
+        // Run initial DC operating point (t=tstart)
+        let dc_result = run_newton_with_stepping(&NewtonConfig::default(), &mut x, |x, gmin, source_scale| {
+            let mut mna = MnaBuilder::new(node_count);
+            for inst in &self.circuit.instances.instances {
+                let stamp = InstanceStamp {
+                    instance: inst.clone(),
+                };
+                let mut ctx = mna.context_with(gmin, source_scale);
+                let _ = stamp.stamp_dc(&mut ctx, Some(x));
+            }
+            mna.builder.insert(gnd, gnd, 1.0);
+            let (ap, ai, ax) = mna.builder.finalize();
+            (ap, ai, ax, mna.rhs, mna.builder.n)
+        }, self.solver.as_mut());
+
+        debug_dump_newton_with_tag("tran_dc_op", &dc_result);
+
+        if !dc_result.converged {
+            return RunResult {
+                id: RunId(0),
+                analysis: AnalysisType::Tran,
+                status: RunStatus::Failed,
+                iterations: 0,
+                node_names: self.circuit.nodes.id_to_name.clone(),
+                solution: Vec::new(),
+                message: Some("DC operating point failed to converge".to_string()),
+                sweep_var: None,
+                sweep_values: Vec::new(),
+                sweep_solutions: Vec::new(),
+                tran_times: Vec::new(),
+                tran_solutions: Vec::new(),
+            };
+        }
+
+        // Store initial point (t=tstart)
+        tran_times.push(config.tstart);
+        tran_solutions.push(x.clone());
+
+        // Initialize transient state from DC solution
+        update_transient_state(&self.circuit.instances.instances, &x, &mut state);
+
+        // Time stepping loop
         while step_state.time < config.tstop {
             let mut x_iter = x.clone();
-            let gnd = self.circuit.nodes.gnd_id.0;
             let result = run_newton_with_stepping(&NewtonConfig::default(), &mut x_iter, |x, gmin, source_scale| {
                 let mut mna = MnaBuilder::new(node_count);
                 for inst in &self.circuit.instances.instances {
@@ -155,32 +232,44 @@ impl Engine {
                         &mut state,
                     );
                 }
-                // 固定地节点，避免矩阵奇异
                 mna.builder.insert(gnd, gnd, 1.0);
                 let (ap, ai, ax) = mna.builder.finalize();
                 (ap, ai, ax, mna.rhs, mna.builder.n)
             }, self.solver.as_mut());
 
             debug_dump_newton_with_tag("tran", &result);
+
             if !result.converged {
+                // Reduce time step and retry
                 step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
-                final_status = RunStatus::Failed;
+                if step_state.dt <= config.min_dt {
+                    final_status = RunStatus::Failed;
+                    break;
+                }
                 continue;
             }
 
             let ErrorEstimate { accept, .. } =
                 estimate_error_weighted(&x, &x_iter, config.abs_tol, config.rel_tol);
             step_state.accepted = accept;
+
             if accept {
                 x = x_iter;
                 update_transient_state(&self.circuit.instances.instances, &x, &mut state);
                 step_state.time += step_state.dt;
                 step_state.step += 1;
                 step_state.last_dt = step_state.dt;
+
+                // Store accepted time point and solution
+                tran_times.push(step_state.time);
+                tran_solutions.push(x.clone());
+
+                // Increase time step for next iteration (adaptive stepping)
                 if step_state.dt < config.max_dt {
                     step_state.dt = (step_state.dt * 1.5).min(config.max_dt);
                 }
             } else {
+                // Reduce time step and retry
                 step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
             }
         }
@@ -191,15 +280,13 @@ impl Engine {
             status: final_status,
             iterations: step_state.step,
             node_names: self.circuit.nodes.id_to_name.clone(),
-            solution: if matches!(final_status, RunStatus::Converged) {
-                x
-            } else {
-                Vec::new()
-            },
+            solution: x,  // Final solution
             message: None,
             sweep_var: None,
             sweep_values: Vec::new(),
             sweep_solutions: Vec::new(),
+            tran_times,
+            tran_solutions,
         }
     }
 
@@ -227,6 +314,8 @@ impl Engine {
                 sweep_var: Some(source.to_string()),
                 sweep_values: Vec::new(),
                 sweep_solutions: Vec::new(),
+                tran_times: Vec::new(),
+                tran_solutions: Vec::new(),
             };
         }
         let source_idx = source_idx.unwrap();
@@ -321,6 +410,8 @@ impl Engine {
             sweep_var: Some(source.to_string()),
             sweep_values,
             sweep_solutions,
+            tran_times: Vec::new(),
+            tran_solutions: Vec::new(),
         }
     }
 }
