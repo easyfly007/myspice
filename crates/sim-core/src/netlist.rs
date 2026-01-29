@@ -1013,8 +1013,6 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
             params,
             value: device.value.clone(),
             control: device.control.clone(),
-            ac_mag: None,
-            ac_phase: None,
         });
     }
 

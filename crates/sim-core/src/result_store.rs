@@ -31,10 +31,6 @@ pub struct RunResult {
     pub sweep_values: Vec<f64>,
     /// DC sweep: solution vectors at each sweep point
     pub sweep_solutions: Vec<Vec<f64>>,
-    /// TRAN analysis: time points at each accepted step
-    pub tran_times: Vec<f64>,
-    /// TRAN analysis: solution vectors at each time point
-    pub tran_solutions: Vec<Vec<f64>>,
 }
 
 #[derive(Debug, Clone)]

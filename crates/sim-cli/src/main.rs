@@ -180,33 +180,11 @@ fn main() {
         // Print results based on analysis type
         match run.analysis {
             AnalysisType::Tran => {
-                println!("tran status: {:?} points={}", run.status, run.tran_times.len());
-                if !run.tran_times.is_empty() {
-                    println!(
-                        "Time range: {:e} to {:e}",
-                        run.tran_times.first().unwrap(),
-                        run.tran_times.last().unwrap()
-                    );
-                }
+                println!("tran status: {:?} steps={}", run.status, run.iterations);
                 println!("Final values:");
                 for (idx, name) in run.node_names.iter().enumerate() {
                     let value = run.solution.get(idx).copied().unwrap_or(0.0);
                     println!("  V({}) = {:.*e}", name, precision, value);
-                }
-
-                // Write TRAN waveform PSF if requested
-                if let Some(path) = psf_path {
-                    if let Err(err) = sim_core::psf::write_psf_tran(
-                        &run.tran_times,
-                        &run.node_names,
-                        &run.tran_solutions,
-                        &path,
-                        precision,
-                    ) {
-                        eprintln!("failed to write psf: {}", err);
-                        std::process::exit(1);
-                    }
-                    println!("psf written: {}", path.display());
                 }
             }
             _ => {
@@ -215,15 +193,15 @@ fn main() {
                     let value = run.solution.get(idx).copied().unwrap_or(0.0);
                     println!("V({}) = {:.*e}", name, precision, value);
                 }
-
-                if let Some(path) = psf_path {
-                    if let Err(err) = store.write_psf_text(run_id, &path, precision) {
-                        eprintln!("failed to write psf: {}", err);
-                        std::process::exit(1);
-                    }
-                    println!("psf written: {}", path.display());
-                }
             }
+        }
+
+        if let Some(path) = psf_path {
+            if let Err(err) = store.write_psf_text(run_id, &path, precision) {
+                eprintln!("failed to write psf: {}", err);
+                std::process::exit(1);
+            }
+            println!("psf written: {}", path.display());
         }
     }
 }

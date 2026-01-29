@@ -111,23 +111,14 @@ impl Engine {
             sweep_var: None,
             sweep_values: Vec::new(),
             sweep_solutions: Vec::new(),
-            tran_times: Vec::new(),
-            tran_solutions: Vec::new(),
         }
     }
 
     fn run_tran_result(&mut self) -> RunResult {
         let node_count = self.circuit.nodes.id_to_name.len();
+        let mut x = vec![0.0; node_count];
         let mut state = TransientState::default();
         self.solver.prepare(node_count);
-
-        // Run DC operating point first to establish initial conditions
-        let dc_result = self.run_dc_result(AnalysisType::Op);
-        let mut x = if matches!(dc_result.status, RunStatus::Converged) {
-            dc_result.solution
-        } else {
-            vec![0.0; node_count]
-        };
         let config = TimeStepConfig {
             tstep: 1e-6,
             tstop: 1e-5,
@@ -147,24 +138,7 @@ impl Engine {
         };
         let mut final_status = RunStatus::Converged;
 
-        // Waveform storage for time-series output
-        let mut tran_times: Vec<f64> = Vec::new();
-        let mut tran_solutions: Vec<Vec<f64>> = Vec::new();
-
-        // Store initial condition at t=0
-        tran_times.push(step_state.time);
-        tran_solutions.push(x.clone());
-
-        // Guard against infinite loops
-        let max_iterations = 1_000_000;
-        let mut iteration_count = 0;
-
         while step_state.time < config.tstop {
-            iteration_count += 1;
-            if iteration_count > max_iterations {
-                final_status = RunStatus::Failed;
-                break;
-            }
             let mut x_iter = x.clone();
             let gnd = self.circuit.nodes.gnd_id.0;
             let result = run_newton_with_stepping(&NewtonConfig::default(), &mut x_iter, |x, gmin, source_scale| {
@@ -190,11 +164,7 @@ impl Engine {
             debug_dump_newton_with_tag("tran", &result);
             if !result.converged {
                 step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
-                // If time step is at minimum and still not converging, fail
-                if step_state.dt <= config.min_dt * 1.01 {
-                    final_status = RunStatus::Failed;
-                    break;
-                }
+                final_status = RunStatus::Failed;
                 continue;
             }
 
@@ -207,11 +177,6 @@ impl Engine {
                 step_state.time += step_state.dt;
                 step_state.step += 1;
                 step_state.last_dt = step_state.dt;
-
-                // Store accepted time point for waveform output
-                tran_times.push(step_state.time);
-                tran_solutions.push(x.clone());
-
                 if step_state.dt < config.max_dt {
                     step_state.dt = (step_state.dt * 1.5).min(config.max_dt);
                 }
@@ -235,8 +200,6 @@ impl Engine {
             sweep_var: None,
             sweep_values: Vec::new(),
             sweep_solutions: Vec::new(),
-            tran_times,
-            tran_solutions,
         }
     }
 
@@ -264,8 +227,6 @@ impl Engine {
                 sweep_var: Some(source.to_string()),
                 sweep_values: Vec::new(),
                 sweep_solutions: Vec::new(),
-                tran_times: Vec::new(),
-                tran_solutions: Vec::new(),
             };
         }
         let source_idx = source_idx.unwrap();
@@ -360,8 +321,6 @@ impl Engine {
             sweep_var: Some(source.to_string()),
             sweep_values,
             sweep_solutions,
-            tran_times: Vec::new(),
-            tran_solutions: Vec::new(),
         }
     }
 }
