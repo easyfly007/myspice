@@ -1,5 +1,7 @@
 use crate::circuit::{DeviceKind, Instance};
+use crate::complex_mna::ComplexStampContext;
 use crate::mna::StampContext;
+use num_complex::Complex64;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -16,6 +18,11 @@ pub trait DeviceStamp {
         x: Option<&[f64]>,
         dt: f64,
         state: &mut TransientState,
+    ) -> Result<(), StampError>;
+    fn stamp_ac(
+        &self,
+        ctx: &mut ComplexStampContext,
+        dc_solution: &[f64],
     ) -> Result<(), StampError>;
 }
 
@@ -53,6 +60,27 @@ impl DeviceStamp for InstanceStamp {
             DeviceKind::C => stamp_capacitor_tran(ctx, &self.instance, x, dt, state),
             DeviceKind::L => stamp_inductor_tran(ctx, &self.instance, x, dt, state),
             _ => self.stamp_dc(ctx, x),
+        }
+    }
+
+    fn stamp_ac(
+        &self,
+        ctx: &mut ComplexStampContext,
+        dc_solution: &[f64],
+    ) -> Result<(), StampError> {
+        match self.instance.kind {
+            DeviceKind::R => stamp_resistor_ac(ctx, &self.instance),
+            DeviceKind::C => stamp_capacitor_ac(ctx, &self.instance),
+            DeviceKind::L => stamp_inductor_ac(ctx, &self.instance),
+            DeviceKind::V => stamp_voltage_ac(ctx, &self.instance),
+            DeviceKind::I => stamp_current_ac(ctx, &self.instance),
+            DeviceKind::D => stamp_diode_ac(ctx, &self.instance, dc_solution),
+            DeviceKind::M => stamp_mos_ac(ctx, &self.instance, dc_solution),
+            DeviceKind::E => stamp_vcvs_ac(ctx, &self.instance),
+            DeviceKind::G => stamp_vccs_ac(ctx, &self.instance),
+            DeviceKind::F => stamp_cccs_ac(ctx, &self.instance),
+            DeviceKind::H => stamp_ccvs_ac(ctx, &self.instance),
+            DeviceKind::X => Ok(()), // Subcircuit instances are already expanded
         }
     }
 }
@@ -608,6 +636,348 @@ fn stamp_ccvs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError>
     ctx.add(k, out_p, 1.0);
     ctx.add(k, out_n, -1.0);
     ctx.add(k, k_control, -gain);
+
+    Ok(())
+}
+
+// ============================================================================
+// AC Small-Signal Stamping Functions
+// ============================================================================
+
+/// Resistor AC stamping: Y = G = 1/R (real admittance)
+fn stamp_resistor_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let value = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+    let g = 1.0 / value;
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+    ctx.add_real(a, a, g);
+    ctx.add_real(b, b, g);
+    ctx.add_real(a, b, -g);
+    ctx.add_real(b, a, -g);
+    Ok(())
+}
+
+/// Capacitor AC stamping: Y = jωC (imaginary admittance)
+fn stamp_capacitor_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let c = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+    let y = ctx.omega * c; // jωC has imaginary part ωC
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+    ctx.add_imag(a, a, y);
+    ctx.add_imag(b, b, y);
+    ctx.add_imag(a, b, -y);
+    ctx.add_imag(b, a, -y);
+    Ok(())
+}
+
+/// Inductor AC stamping: Y = 1/(jωL) = -j/(ωL)
+/// Uses auxiliary variable for inductor current
+fn stamp_inductor_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let l = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+
+    // Allocate auxiliary variable for inductor current
+    let k = ctx.allocate_aux(&inst.name);
+
+    // KCL at nodes: current flows from a to b
+    ctx.add_real(a, k, 1.0);
+    ctx.add_real(b, k, -1.0);
+
+    // Constitutive relation: V(a) - V(b) = jωL * I
+    ctx.add_real(k, a, 1.0);
+    ctx.add_real(k, b, -1.0);
+    ctx.add_imag(k, k, -ctx.omega * l); // -jωL
+
+    Ok(())
+}
+
+/// Voltage source AC stamping with AC magnitude and phase
+fn stamp_voltage_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+
+    // Allocate auxiliary variable for source current
+    let k = ctx.allocate_aux(&inst.name);
+
+    // KCL at nodes
+    ctx.add_real(a, k, 1.0);
+    ctx.add_real(b, k, -1.0);
+
+    // Constitutive relation: V(a) - V(b) = Vac
+    ctx.add_real(k, a, 1.0);
+    ctx.add_real(k, b, -1.0);
+
+    // AC excitation: Vac = ac_mag * exp(j * ac_phase)
+    let ac_mag = inst.ac_mag.unwrap_or(0.0);
+    let ac_phase_deg = inst.ac_phase.unwrap_or(0.0);
+    let ac_phase_rad = ac_phase_deg * std::f64::consts::PI / 180.0;
+    let vac = Complex64::from_polar(ac_mag, ac_phase_rad);
+    ctx.add_rhs(k, vac);
+
+    Ok(())
+}
+
+/// Current source AC stamping with AC magnitude and phase
+fn stamp_current_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+
+    // AC excitation: Iac = ac_mag * exp(j * ac_phase)
+    let ac_mag = inst.ac_mag.unwrap_or(0.0);
+    let ac_phase_deg = inst.ac_phase.unwrap_or(0.0);
+    let ac_phase_rad = ac_phase_deg * std::f64::consts::PI / 180.0;
+    let iac = Complex64::from_polar(ac_mag, ac_phase_rad);
+
+    // Current flows from a to b (out of a, into b)
+    ctx.add_rhs(a, -iac);
+    ctx.add_rhs(b, iac);
+
+    Ok(())
+}
+
+/// Diode AC stamping: linearized small-signal conductance from DC operating point
+fn stamp_diode_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+
+    let gmin = 1e-12;
+    let isat = param_value(&inst.params, &["is"]).unwrap_or(1e-14);
+    let emission = param_value(&inst.params, &["n", "nj"]).unwrap_or(1.0);
+    let vt = 0.02585 * emission;
+
+    let va = dc_solution.get(a).copied().unwrap_or(0.0);
+    let vb = dc_solution.get(b).copied().unwrap_or(0.0);
+    let vd = va - vb;
+
+    // Small-signal conductance gd = dId/dVd = (Is/Vt) * exp(Vd/Vt)
+    let exp_vd = (vd / vt).exp();
+    let gd = (isat / vt) * exp_vd;
+    let g = gd.max(gmin);
+
+    ctx.add_real(a, a, g);
+    ctx.add_real(b, b, g);
+    ctx.add_real(a, b, -g);
+    ctx.add_real(b, a, -g);
+
+    Ok(())
+}
+
+/// MOSFET AC stamping: linearized small-signal model from DC operating point
+fn stamp_mos_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 4 {
+        return Err(StampError::InvalidNodes);
+    }
+    let drain = inst.nodes[0].0;
+    let gate = inst.nodes[1].0;
+    let source = inst.nodes[2].0;
+    let bulk = inst.nodes[3].0;
+    let gmin = 1e-12;
+
+    // Parse model level
+    let level = param_value(&inst.params, &["level"]).unwrap_or(49.0) as u32;
+
+    // Determine NMOS/PMOS
+    let is_pmos = if let Some(t) = inst.params.get("type") {
+        let t_lower = t.to_ascii_lowercase();
+        t_lower.contains("pmos") || t_lower == "p"
+    } else if inst.params.contains_key("pmos") {
+        true
+    } else {
+        false
+    };
+
+    // Build BSIM parameters
+    let params = sim_devices::bsim::build_bsim_params(&inst.params, level, is_pmos);
+
+    let w = param_value(&inst.params, &["w"]).unwrap_or(1e-6);
+    let l = param_value(&inst.params, &["l"]).unwrap_or(1e-6);
+    let temp = param_value(&inst.params, &["temp"]).unwrap_or(300.15);
+
+    let vd = dc_solution.get(drain).copied().unwrap_or(0.0);
+    let vg = dc_solution.get(gate).copied().unwrap_or(0.0);
+    let vs = dc_solution.get(source).copied().unwrap_or(0.0);
+    let vb = dc_solution.get(bulk).copied().unwrap_or(0.0);
+
+    // Get small-signal parameters from DC operating point
+    let output = sim_devices::bsim::evaluate_mos(&params, w, l, vd, vg, vs, vb, temp);
+
+    let gm = output.gm;
+    let gds = output.gds.max(gmin);
+    let gmbs = output.gmbs;
+
+    // Stamp gds (output conductance between drain and source)
+    ctx.add_real(drain, drain, gds);
+    ctx.add_real(source, source, gds);
+    ctx.add_real(drain, source, -gds);
+    ctx.add_real(source, drain, -gds);
+
+    // Stamp gm (transconductance: current controlled by Vgs)
+    ctx.add_real(drain, gate, gm);
+    ctx.add_real(drain, source, -gm);
+    ctx.add_real(source, gate, -gm);
+    ctx.add_real(source, source, gm);
+
+    // Stamp gmbs (body transconductance: current controlled by Vbs)
+    if gmbs.abs() > gmin * 0.01 {
+        ctx.add_real(drain, bulk, gmbs);
+        ctx.add_real(drain, source, -gmbs);
+        ctx.add_real(source, bulk, -gmbs);
+        ctx.add_real(source, source, gmbs);
+    }
+
+    Ok(())
+}
+
+/// VCVS AC stamping (frequency-independent)
+fn stamp_vcvs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 4 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gain = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+    let in_p = inst.nodes[2].0;
+    let in_n = inst.nodes[3].0;
+
+    let k = ctx.allocate_aux(&inst.name);
+
+    ctx.add_real(out_p, k, 1.0);
+    ctx.add_real(out_n, k, -1.0);
+    ctx.add_real(k, out_p, 1.0);
+    ctx.add_real(k, out_n, -1.0);
+    ctx.add_real(k, in_p, -gain);
+    ctx.add_real(k, in_n, gain);
+
+    Ok(())
+}
+
+/// VCCS AC stamping (frequency-independent)
+fn stamp_vccs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 4 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gm = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+    let in_p = inst.nodes[2].0;
+    let in_n = inst.nodes[3].0;
+
+    ctx.add_real(out_p, in_p, gm);
+    ctx.add_real(out_p, in_n, -gm);
+    ctx.add_real(out_n, in_p, -gm);
+    ctx.add_real(out_n, in_n, gm);
+
+    Ok(())
+}
+
+/// CCCS AC stamping (frequency-independent)
+fn stamp_cccs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gain = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    let control_name = inst.control.as_ref().ok_or(StampError::MissingValue)?;
+    let control_aux = ctx
+        .aux
+        .name_to_id
+        .get(control_name)
+        .copied()
+        .ok_or(StampError::MissingValue)?;
+    let k_control = ctx.node_count + control_aux;
+
+    ctx.add_real(out_p, k_control, gain);
+    ctx.add_real(out_n, k_control, -gain);
+
+    Ok(())
+}
+
+/// CCVS AC stamping (frequency-independent)
+fn stamp_ccvs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+    let gain = inst
+        .value
+        .as_deref()
+        .and_then(parse_number_with_suffix)
+        .ok_or(StampError::MissingValue)?;
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    let control_name = inst.control.as_ref().ok_or(StampError::MissingValue)?;
+    let control_aux = ctx
+        .aux
+        .name_to_id
+        .get(control_name)
+        .copied()
+        .ok_or(StampError::MissingValue)?;
+    let k_control = ctx.node_count + control_aux;
+
+    let k = ctx.allocate_aux(&inst.name);
+
+    ctx.add_real(out_p, k, 1.0);
+    ctx.add_real(out_n, k, -1.0);
+    ctx.add_real(k, out_p, 1.0);
+    ctx.add_real(k, out_n, -1.0);
+    ctx.add_real(k, k_control, -gain);
 
     Ok(())
 }

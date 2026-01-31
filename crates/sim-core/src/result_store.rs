@@ -6,6 +6,7 @@ pub enum AnalysisType {
     Op,
     Dc,
     Tran,
+    Ac,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,6 +36,11 @@ pub struct RunResult {
     pub tran_times: Vec<f64>,
     /// TRAN analysis: solution vectors at each time point
     pub tran_solutions: Vec<Vec<f64>>,
+    /// AC analysis: frequency points
+    pub ac_frequencies: Vec<f64>,
+    /// AC analysis: complex solutions at each frequency point
+    /// Each inner Vec contains (magnitude_dB, phase_deg) pairs for each node
+    pub ac_solutions: Vec<Vec<(f64, f64)>>,
 }
 
 #[derive(Debug, Clone)]

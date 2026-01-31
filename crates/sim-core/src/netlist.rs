@@ -74,6 +74,7 @@ pub enum ControlKind {
     Op,
     Dc,
     Tran,
+    Ac,
     End,
     Other,
 }
@@ -540,6 +541,7 @@ fn map_control_kind(command: &str) -> ControlKind {
         ".op" => ControlKind::Op,
         ".dc" => ControlKind::Dc,
         ".tran" => ControlKind::Tran,
+        ".ac" => ControlKind::Ac,
         ".end" => ControlKind::End,
         _ => ControlKind::Other,
     }
@@ -948,6 +950,30 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
                             tstop,
                             tstart,
                             tmax,
+                        });
+                    }
+                }
+                ControlKind::Ac => {
+                    // .ac dec|oct|lin <points> <fstart> <fstop>
+                    if ctrl.args.len() >= 4 {
+                        let sweep_type = match ctrl.args[0].to_ascii_lowercase().as_str() {
+                            "dec" => crate::circuit::AcSweepType::Dec,
+                            "oct" => crate::circuit::AcSweepType::Oct,
+                            "lin" => crate::circuit::AcSweepType::Lin,
+                            _ => crate::circuit::AcSweepType::Dec, // default to decade
+                        };
+                        let points = ctrl.args[1].parse().unwrap_or(10);
+                        let fstart = parse_number_with_suffix(&ctrl.args[2])
+                            .or_else(|| ctrl.args[2].parse().ok())
+                            .unwrap_or(1.0);
+                        let fstop = parse_number_with_suffix(&ctrl.args[3])
+                            .or_else(|| ctrl.args[3].parse().ok())
+                            .unwrap_or(1e6);
+                        circuit.analysis.push(AnalysisCmd::Ac {
+                            sweep_type,
+                            points,
+                            fstart,
+                            fstop,
                         });
                     }
                 }

@@ -1,12 +1,15 @@
 use crate::analysis::{
     estimate_error_weighted, AnalysisPlan, ErrorEstimate, TimeStepConfig, TimeStepState,
 };
-use crate::circuit::Circuit;
+use crate::circuit::{AcSweepType, Circuit};
+use crate::complex_mna::ComplexMnaBuilder;
+use crate::complex_solver::create_complex_solver;
 use crate::mna::MnaBuilder;
 use crate::result_store::{AnalysisType, ResultStore, RunId, RunResult, RunStatus};
 use crate::solver::{create_solver, LinearSolver, SolverType};
 use crate::stamp::{update_transient_state, DeviceStamp, InstanceStamp, TransientState};
 use crate::newton::{debug_dump_newton_with_tag, run_newton_with_stepping, NewtonConfig};
+use num_complex::Complex64;
 
 pub struct Engine {
     pub circuit: Circuit,
@@ -57,6 +60,9 @@ impl Engine {
             }
             crate::circuit::AnalysisCmd::Dc { source, start, stop, step } => {
                 self.run_dc_sweep_result(source, *start, *stop, *step)
+            }
+            crate::circuit::AnalysisCmd::Ac { sweep_type, points, fstart, fstop } => {
+                self.run_ac_result(*sweep_type, *points, *fstart, *fstop)
             }
             _ => self.run_dc_result(AnalysisType::Op),
         };
@@ -116,6 +122,8 @@ impl Engine {
             sweep_solutions: Vec::new(),
             tran_times: Vec::new(),
             tran_solutions: Vec::new(),
+            ac_frequencies: Vec::new(),
+            ac_solutions: Vec::new(),
         }
     }
 
@@ -205,6 +213,8 @@ impl Engine {
                 sweep_solutions: Vec::new(),
                 tran_times: Vec::new(),
                 tran_solutions: Vec::new(),
+                ac_frequencies: Vec::new(),
+                ac_solutions: Vec::new(),
             };
         }
 
@@ -287,6 +297,8 @@ impl Engine {
             sweep_solutions: Vec::new(),
             tran_times,
             tran_solutions,
+            ac_frequencies: Vec::new(),
+            ac_solutions: Vec::new(),
         }
     }
 
@@ -316,6 +328,8 @@ impl Engine {
                 sweep_solutions: Vec::new(),
                 tran_times: Vec::new(),
                 tran_solutions: Vec::new(),
+                ac_frequencies: Vec::new(),
+                ac_solutions: Vec::new(),
             };
         }
         let source_idx = source_idx.unwrap();
@@ -412,8 +426,196 @@ impl Engine {
             sweep_solutions,
             tran_times: Vec::new(),
             tran_solutions: Vec::new(),
+            ac_frequencies: Vec::new(),
+            ac_solutions: Vec::new(),
         }
     }
+
+    /// Run AC (small-signal frequency-domain) analysis
+    ///
+    /// # Arguments
+    /// * `sweep_type` - Type of frequency sweep (Dec, Oct, or Lin)
+    /// * `points` - Points per decade/octave, or total points for linear sweep
+    /// * `fstart` - Start frequency in Hz
+    /// * `fstop` - Stop frequency in Hz
+    fn run_ac_result(
+        &mut self,
+        sweep_type: AcSweepType,
+        points: usize,
+        fstart: f64,
+        fstop: f64,
+    ) -> RunResult {
+        let node_count = self.circuit.nodes.id_to_name.len();
+        let gnd = self.circuit.nodes.gnd_id.0;
+
+        // Step 1: Run DC operating point for linearization of nonlinear devices
+        let dc_result = self.run_dc_result(AnalysisType::Op);
+        if !matches!(dc_result.status, RunStatus::Converged) {
+            return RunResult {
+                id: RunId(0),
+                analysis: AnalysisType::Ac,
+                status: RunStatus::Failed,
+                iterations: 0,
+                node_names: self.circuit.nodes.id_to_name.clone(),
+                solution: Vec::new(),
+                message: Some("DC operating point failed to converge".to_string()),
+                sweep_var: None,
+                sweep_values: Vec::new(),
+                sweep_solutions: Vec::new(),
+                tran_times: Vec::new(),
+                tran_solutions: Vec::new(),
+                ac_frequencies: Vec::new(),
+                ac_solutions: Vec::new(),
+            };
+        }
+
+        let dc_solution = dc_result.solution;
+
+        // Step 2: Generate frequency sweep
+        let frequencies = generate_frequency_sweep(sweep_type, points, fstart, fstop);
+
+        // Step 3: Create complex solver
+        let mut complex_solver = create_complex_solver();
+
+        // Step 4: For each frequency, build and solve the complex MNA system
+        let mut ac_frequencies = Vec::with_capacity(frequencies.len());
+        let mut ac_solutions = Vec::with_capacity(frequencies.len());
+        let mut total_iterations = 0;
+
+        for freq in frequencies {
+            let omega = 2.0 * std::f64::consts::PI * freq;
+
+            // Build complex MNA matrix
+            let mut mna = ComplexMnaBuilder::new(node_count);
+
+            // Stamp all devices
+            for inst in &self.circuit.instances.instances {
+                let stamp = InstanceStamp {
+                    instance: inst.clone(),
+                };
+                let mut ctx = mna.context(omega);
+                let _ = stamp.stamp_ac(&mut ctx, &dc_solution);
+            }
+
+            // Fix ground node: clear the row and set diagonal to 1
+            // First, clear any entries in the ground row (which is stored in columns)
+            for col in 0..mna.builder.n {
+                mna.builder.col_entries[col].retain(|(row, _)| *row != gnd);
+            }
+            // Set diagonal to 1
+            mna.builder.insert(gnd, gnd, Complex64::new(1.0, 0.0));
+            // Clear ground node RHS
+            mna.rhs[gnd] = Complex64::new(0.0, 0.0);
+
+            // Finalize matrix
+            let (ap, ai, ax) = mna.builder.finalize();
+            let n = mna.builder.n;
+
+            // Prepare solver and solve
+            complex_solver.prepare(n);
+            let mut x = vec![Complex64::new(0.0, 0.0); n];
+
+            let solved = complex_solver.solve(&ap, &ai, &ax, &mna.rhs, &mut x);
+            if !solved {
+                return RunResult {
+                    id: RunId(0),
+                    analysis: AnalysisType::Ac,
+                    status: RunStatus::Failed,
+                    iterations: total_iterations,
+                    node_names: self.circuit.nodes.id_to_name.clone(),
+                    solution: dc_solution,
+                    message: Some(format!("AC solve failed at frequency {} Hz", freq)),
+                    sweep_var: None,
+                    sweep_values: Vec::new(),
+                    sweep_solutions: Vec::new(),
+                    tran_times: Vec::new(),
+                    tran_solutions: Vec::new(),
+                    ac_frequencies,
+                    ac_solutions,
+                };
+            }
+
+            // Convert complex solution to (magnitude_dB, phase_deg) for each node
+            let mut freq_solution = Vec::with_capacity(node_count);
+            for i in 0..node_count {
+                let v = x[i];
+                let mag = v.norm();
+                let mag_db = if mag > 1e-30 {
+                    20.0 * mag.log10()
+                } else {
+                    -600.0 // Very small magnitude
+                };
+                let phase_deg = v.arg() * 180.0 / std::f64::consts::PI;
+                freq_solution.push((mag_db, phase_deg));
+            }
+
+            ac_frequencies.push(freq);
+            ac_solutions.push(freq_solution);
+            total_iterations += 1;
+        }
+
+        RunResult {
+            id: RunId(0),
+            analysis: AnalysisType::Ac,
+            status: RunStatus::Converged,
+            iterations: total_iterations,
+            node_names: self.circuit.nodes.id_to_name.clone(),
+            solution: dc_solution,
+            message: None,
+            sweep_var: None,
+            sweep_values: Vec::new(),
+            sweep_solutions: Vec::new(),
+            tran_times: Vec::new(),
+            tran_solutions: Vec::new(),
+            ac_frequencies,
+            ac_solutions,
+        }
+    }
+}
+
+/// Generate frequency sweep vector based on sweep type
+fn generate_frequency_sweep(
+    sweep_type: AcSweepType,
+    points: usize,
+    fstart: f64,
+    fstop: f64,
+) -> Vec<f64> {
+    let mut frequencies = Vec::new();
+
+    match sweep_type {
+        AcSweepType::Dec => {
+            // Logarithmic sweep with N points per decade
+            let log_start = fstart.log10();
+            let log_stop = fstop.log10();
+            let decades = log_stop - log_start;
+            let total_points = (decades * points as f64).ceil() as usize + 1;
+
+            for i in 0..total_points {
+                let log_f = log_start + (i as f64) * decades / ((total_points - 1).max(1) as f64);
+                frequencies.push(10.0_f64.powf(log_f));
+            }
+        }
+        AcSweepType::Oct => {
+            // Logarithmic sweep with N points per octave
+            // 1 octave = log2(2) = 1, so octaves = log2(fstop/fstart)
+            let octaves = (fstop / fstart).log2();
+            let total_points = (octaves * points as f64).ceil() as usize + 1;
+
+            for i in 0..total_points {
+                let factor = (i as f64) * octaves / ((total_points - 1).max(1) as f64);
+                frequencies.push(fstart * 2.0_f64.powf(factor));
+            }
+        }
+        AcSweepType::Lin => {
+            // Linear sweep with N total points
+            let step = (fstop - fstart) / ((points - 1).max(1) as f64);
+            for i in 0..points {
+                frequencies.push(fstart + (i as f64) * step);
+            }
+        }
+    }
+
+    frequencies
 }
 
 pub fn debug_dump_engine(engine: &Engine) {
