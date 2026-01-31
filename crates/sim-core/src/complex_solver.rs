@@ -68,13 +68,14 @@ impl ComplexLinearSolver for ComplexDenseSolver {
         }
 
         // Clear and fill dense matrix from CSC format
+        // Note: CSC format may have duplicate entries that need to be summed
         self.a.fill(Complex64::new(0.0, 0.0));
         for col in 0..n {
             let start = ap[col] as usize;
             let end = ap[col + 1] as usize;
             for k in start..end {
                 let row = ai[k] as usize;
-                self.a[row * n + col] = ax[k];
+                self.a[row * n + col] += ax[k];  // Add instead of overwrite
             }
         }
 

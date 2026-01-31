@@ -16,6 +16,8 @@ fn psf_text_writer_outputs_basic_content() {
         sweep_solutions: Vec::new(),
         tran_times: Vec::new(),
         tran_solutions: Vec::new(),
+        ac_frequencies: Vec::new(),
+        ac_solutions: Vec::new(),
     };
     let run_id = store.add_run(run);
 
