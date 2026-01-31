@@ -167,9 +167,10 @@ pub trait DeviceStamp {
 | 网表解析 | ✅ 完成 | 支持子电路、参数替换、include、表达式求值 |
 | DC 仿真 | ✅ 完成 | Newton 迭代 + gmin/source stepping |
 | TRAN 仿真 | ✅ 完成 | 自适应步长、加权误差估计 |
+| AC 仿真 | ✅ 完成 | 小信号频域分析，支持 DEC/OCT/LIN 扫描 |
 | 器件模型 | ✅ 完成 | R/C/L/V/I/D/MOS 的 stamp 实现，BSIM3/BSIM4 完整支持 |
-| 求解器 | ✅ 完成 | DenseSolver 实现，KLU 接口可选 |
-| 结果输出 | ✅ 完成 | PSF 文本格式（含 DC 扫描导出、精度控制） |
+| 求解器 | ✅ 完成 | DenseSolver 实现，KLU 接口可选，复数求解器 |
+| 结果输出 | ✅ 完成 | PSF 文本格式（含 DC/TRAN/AC 导出、精度控制） |
 | API 服务 | 🔄 最小可用 | 已支持 OP 运行与结果查询 |
 | CLI | ✅ 完成 | 完整帮助信息、版本、分析类型选择、PSF 导出、精度控制 |
 
@@ -236,11 +237,15 @@ OPTIONS:
     -h, --help              显示帮助信息
     -V, --version           显示版本信息
     -o, --psf <PATH>        导出 PSF 文本文件
-    -a, --analysis <TYPE>   分析类型: op, dc, tran (默认: 从网表或 op)
+    -a, --analysis <TYPE>   分析类型: op, dc, tran, ac (默认: 从网表或 op)
     --dc-source <NAME>      DC 扫描源名称
     --dc-start <VALUE>      DC 扫描起始值
     --dc-stop <VALUE>       DC 扫描终止值
     --dc-step <VALUE>       DC 扫描步长
+    --ac-sweep <TYPE>       AC 扫描类型: dec, oct, lin (默认: dec)
+    --ac-points <N>         AC 每十倍频/倍频程点数或总点数 (默认: 10)
+    --ac-fstart <FREQ>      AC 起始频率 Hz (默认: 1)
+    --ac-fstop <FREQ>       AC 终止频率 Hz (默认: 1e6)
     --precision <N>         输出精度 (1-15 有效数字, 默认: 6)
 ```
 
@@ -603,6 +608,7 @@ cargo test --workspace --exclude sim-cli
 - [x] TRAN 分析结果终端输出
 - [x] BSIM4 (Level 54) 完整实现（衬底电流、应力效应、栅隧穿）
 - [x] TRAN 波形时序存储（多点数据 + PSF 导出）
+- [x] AC 小信号频域分析（复数 MNA、DEC/OCT/LIN 扫描、PSF 导出）
 
 ### 进行中
 - [ ] AI 代理集成与交互协议
@@ -610,7 +616,6 @@ cargo test --workspace --exclude sim-cli
 ### 后续计划
 - [ ] 更完善的受控源语法（POLY 细节）
 - [ ] API 服务完善
-- [ ] AC 分析
 - [ ] 更多输出格式（JSON、CSV、ngspice raw）
 - [ ] 大规模网表性能优化
 
@@ -649,6 +654,16 @@ Netlist -> 拓扑图 -> 自动布局 -> Qt 绘制
 详见 `docs/bsim_model.md`（包含 BSIM 模型概念、当前支持参数、简化计算与 stamp 说明）。
 
 ## 更新日志
+
+### 2026-01-31: AC 小信号分析
+- 实现完整 AC 频域分析功能
+- 支持 DEC（十倍频程）、OCT（倍频程）、LIN（线性）频率扫描
+- 所有器件 AC 小信号模型（R/C/L/V/I/D/M/E/G/F/H）
+- 复数 MNA 矩阵构建与复数 LU 求解器
+- CLI 支持 `--ac-sweep`、`--ac-points`、`--ac-fstart`、`--ac-fstop` 选项
+- AC 结果 PSF 导出（幅度 dB + 相位度）
+- 修复复数求解器重复条目求和问题
+- 详见 `docs/ac_analysis.md`
 
 ### 2026-01-29: TRAN 波形存储
 - 实现 TRAN 分析波形时序存储功能

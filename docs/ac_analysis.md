@@ -84,10 +84,10 @@ sim-cli <netlist> -a ac [options]
 ```
 
 **AC-specific options:**
-- `--ac-type <TYPE>`: Sweep type: dec, oct, lin (default: dec)
+- `--ac-sweep <TYPE>`: Sweep type: dec, oct, lin (default: dec)
 - `--ac-points <N>`: Points per decade/octave or total (default: 10)
-- `--ac-fstart <FREQ>`: Start frequency in Hz
-- `--ac-fstop <FREQ>`: Stop frequency in Hz
+- `--ac-fstart <FREQ>`: Start frequency in Hz (default: 1)
+- `--ac-fstop <FREQ>`: Stop frequency in Hz (default: 1e6)
 
 **Examples:**
 ```bash
@@ -95,7 +95,7 @@ sim-cli <netlist> -a ac [options]
 sim-cli circuit.cir -o output.psf
 
 # Override with CLI options
-sim-cli circuit.cir -a ac --ac-type dec --ac-points 20 \
+sim-cli circuit.cir -a ac --ac-sweep dec --ac-points 20 \
     --ac-fstart 1 --ac-fstop 1meg -o output.psf
 ```
 

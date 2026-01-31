@@ -4,6 +4,81 @@
 
 ---
 
+## 2026-01-31 - AC 小信号频域分析实现
+
+### 已完成
+
+#### AC 分析功能 (engine.rs, stamp.rs, complex_mna.rs, complex_solver.rs)
+
+实现完整的 AC 小信号频域分析功能，计算电路的频率响应。
+
+**功能特性：**
+- 支持三种频率扫描类型：
+  - DEC: 每十倍频程 N 个点（对数扫描）
+  - OCT: 每倍频程 N 个点（对数扫描）
+  - LIN: 总共 N 个点（线性扫描）
+- 在 DC 工作点处线性化非线性器件
+- 复数 MNA 矩阵构建与求解
+- 输出幅度（dB）和相位（度）
+
+**器件 AC 模型：**
+
+| 器件 | AC 导纳/行为 |
+|------|-------------|
+| R | Y = G = 1/R（实数） |
+| C | Y = jωC（纯虚数） |
+| L | Y = 1/(jωL)（使用辅助变量） |
+| V | 辅助变量 + AC 幅度∠相位 激励 |
+| I | RHS 注入 AC 幅度∠相位 |
+| D | DC 工作点线性化 gd |
+| M | DC 工作点 gm, gds, gmbs |
+| E/G/F/H | 与 DC 相同（频率无关） |
+
+**数据结构更新：**
+```rust
+// result_store.rs
+pub enum AnalysisType {
+    Op, Dc, Tran, Ac,  // 新增 Ac
+}
+
+pub struct RunResult {
+    // ... 现有字段 ...
+    pub ac_frequencies: Vec<f64>,           // 频率点
+    pub ac_solutions: Vec<Vec<(f64, f64)>>, // (幅度_dB, 相位_度)
+}
+```
+
+**网表语法：**
+```spice
+.AC DEC 10 1 1MEG      * 10 points per decade from 1 Hz to 1 MHz
+.AC OCT 5 100 10K      * 5 points per octave from 100 Hz to 10 kHz
+.AC LIN 100 1K 10K     * 100 points linearly from 1 kHz to 10 kHz
+
+V1 in 0 DC 0 AC 1 45   * 1V magnitude, 45 degree phase
+```
+
+**CLI 选项：**
+```bash
+sim-cli circuit.cir -a ac --ac-sweep dec --ac-points 10 \
+    --ac-fstart 1 --ac-fstop 1meg --psf output.psf
+```
+
+**验证测试（RC 低通滤波器）：**
+- R=1kΩ, C=1µF, 截止频率 fc=159.15 Hz
+- 1 Hz: -0.000171 dB, -0.36°（理论: ~0 dB, ~0°）✓
+- 159 Hz: -3.006 dB, -44.97°（理论: -3 dB, -45°）✓
+- 1 MHz: -75.96 dB, -89.99°（理论: -76 dB, -90°）✓
+
+**Bug 修复：**
+- 修复 ComplexDenseSolver 中重复矩阵条目覆盖而非求和的问题
+
+### 代码统计
+- 修改文件: 7 (netlist.rs, result_store.rs, stamp.rs, engine.rs, complex_solver.rs, main.rs, 测试文件)
+- 新增代码: ~400 行
+- 新增 AC 相关测试: 验证通过
+
+---
+
 ## 2026-01-27 - DC Sweep 分析实现
 
 ### 已完成
@@ -101,12 +176,7 @@ R2 out 0 2k
 
 ### 高优先级
 
-1. **AC 分析实现**
-   - 添加频率响应分析支持
-   - 实现器件的 AC 模型 (电容、电感的频域阻抗)
-   - 复数矩阵求解器
-
-2. **POLY 语法支持**
+1. **POLY 语法支持**
    - 完善受控源的 POLY 多项式语法
    - 支持多组控制节点/电流
 
@@ -145,6 +215,7 @@ R2 out 0 2k
 
 | 日期 | 版本 | 主要变更 |
 |------|------|----------|
+| 2026-01-31 | - | **AC 小信号频域分析实现** |
 | 2026-01-27 | - | **DC Sweep 分析实现** |
 | 2026-01-27 | - | 代码质量改进、受控源实现、子电路模型支持 |
 | 2026-01-27 | - | BSIM4 支持 |
@@ -161,11 +232,11 @@ R2 out 0 2k
 - [x] 子电路内 .model 语句不被处理
 - [x] 受控源 (E/G/F/H) 未实现 stamp
 - [x] DC sweep 仅解析未实现
+- [x] AC 分析的器件模型 (R/C/L/V/I/D/M/E/G/F/H)
 
 ### 待解决
 - [ ] `spice_datasets_runner` 测试因权限问题失败 (环境问题)
 - [ ] POLY 语法的受控源尚未完全支持
-- [ ] 缺少 AC 分析的器件模型
 - [ ] DC sweep PSF 输出格式支持
 
 ---
