@@ -4,6 +4,54 @@
 
 ---
 
+## 2026-02-01 - Ngspice Raw Format 输出支持
+
+### 已完成
+
+#### Ngspice Raw 格式支持 (raw.rs)
+
+实现 ngspice raw 文件格式输出，兼容 ngspice、LTspice、gwave 等波形查看器。
+
+**功能特性：**
+- 支持所有分析类型的 raw 格式输出：
+  - Operating Point (OP)
+  - DC transfer characteristic (DC sweep)
+  - Transient Analysis (TRAN)
+  - AC Analysis (complex data)
+- ASCII 格式输出，便于调试和兼容性
+- 自动过滤地节点 (node "0")
+
+**CLI 更新：**
+```bash
+# 新增 --format / -f 选项
+sim-cli circuit.cir -o output.raw -f raw
+
+# 保持 PSF 格式为默认
+sim-cli circuit.cir -o output.psf        # PSF format (default)
+sim-cli circuit.cir -o output.raw -f raw # Raw format
+```
+
+**新增文件：**
+- `crates/sim-core/src/raw.rs` - Raw 格式写入函数
+- `crates/sim-core/tests/raw_tests.rs` - 格式测试
+- `docs/ngspice_raw_format.md` - 格式文档
+
+**API:**
+```rust
+use sim_core::raw;
+raw::write_raw_op(&run, &path, precision)?;
+raw::write_raw_sweep(source, sweep_values, node_names, results, &path, precision)?;
+raw::write_raw_tran(times, node_names, solutions, &path, precision)?;
+raw::write_raw_ac(frequencies, node_names, ac_solutions, &path, precision)?;
+```
+
+### 代码统计
+- 新增文件: 3 (raw.rs, raw_tests.rs, ngspice_raw_format.md)
+- 修改文件: 2 (lib.rs, main.rs)
+- 新增测试: 5
+
+---
+
 ## 2026-01-31 - AC 小信号频域分析实现
 
 ### 已完成
@@ -183,7 +231,7 @@ R2 out 0 2k
 3. **更多输出格式**
    - JSON 格式导出
    - CSV 格式导出
-   - ngspice raw 格式兼容
+   - ~~ngspice raw 格式兼容~~ ✓ 已完成
 
 ### 中优先级
 
@@ -215,6 +263,7 @@ R2 out 0 2k
 
 | 日期 | 版本 | 主要变更 |
 |------|------|----------|
+| 2026-02-01 | - | **Ngspice Raw 格式输出支持** |
 | 2026-01-31 | - | **AC 小信号频域分析实现** |
 | 2026-01-27 | - | **DC Sweep 分析实现** |
 | 2026-01-27 | - | 代码质量改进、受控源实现、子电路模型支持 |

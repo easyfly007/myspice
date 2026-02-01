@@ -22,7 +22,8 @@ ARGS:
 OPTIONS:
     -h, --help              Print help information
     -V, --version           Print version information
-    -o, --psf <PATH>        Write results to PSF text file
+    -o, --output <PATH>     Write results to output file
+    -f, --format <FORMAT>   Output format: psf, raw (default: psf)
     -a, --analysis <TYPE>   Analysis type: op, dc, tran, ac (default: from netlist or op)
     --dc-source <NAME>      DC sweep source name
     --dc-start <VALUE>      DC sweep start voltage
@@ -36,7 +37,8 @@ OPTIONS:
 
 EXAMPLES:
     sim-cli circuit.cir                          # Run analysis from netlist
-    sim-cli circuit.cir --psf out.psf            # Export to PSF file
+    sim-cli circuit.cir -o out.psf               # Export to PSF file
+    sim-cli circuit.cir -o out.raw -f raw        # Export to ngspice raw format
     sim-cli circuit.cir -a dc --dc-source V1 \
         --dc-start 0 --dc-stop 5 --dc-step 0.1   # DC sweep
     sim-cli circuit.cir -a tran                  # Transient analysis
@@ -49,10 +51,18 @@ fn print_version() {
     println!("myspice {}", VERSION);
 }
 
+/// Output format for simulation results.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OutputFormat {
+    Psf,
+    Raw,
+}
+
 fn main() {
     let mut args = env::args().skip(1).peekable();
     let mut netlist_path: Option<String> = None;
-    let mut psf_path: Option<PathBuf> = None;
+    let mut output_path: Option<PathBuf> = None;
+    let mut output_format: OutputFormat = OutputFormat::Psf;
     let mut analysis: Option<String> = None;
     let mut dc_source: Option<String> = None;
     let mut dc_start: Option<f64> = None;
@@ -74,12 +84,26 @@ fn main() {
                 print_version();
                 std::process::exit(0);
             }
-            "--psf" | "-o" => {
+            "--output" | "-o" | "--psf" => {
                 let Some(path) = args.next() else {
                     eprintln!("missing value for {}", arg);
                     std::process::exit(2);
                 };
-                psf_path = Some(PathBuf::from(path));
+                output_path = Some(PathBuf::from(path));
+            }
+            "--format" | "-f" => {
+                let Some(value) = args.next() else {
+                    eprintln!("missing value for {}", arg);
+                    std::process::exit(2);
+                };
+                output_format = match value.to_ascii_lowercase().as_str() {
+                    "psf" => OutputFormat::Psf,
+                    "raw" => OutputFormat::Raw,
+                    _ => {
+                        eprintln!("unknown format: {} (expected: psf, raw)", value);
+                        std::process::exit(2);
+                    }
+                };
             }
             "--analysis" | "-a" => {
                 let Some(value) = args.next() else {
@@ -160,9 +184,9 @@ fn main() {
             _ => {
                 if netlist_path.is_none() {
                     netlist_path = Some(arg);
-                } else if psf_path.is_none() {
+                } else if output_path.is_none() {
                     // backward compatibility: second positional as output path
-                    psf_path = Some(PathBuf::from(arg));
+                    output_path = Some(PathBuf::from(arg));
                 } else {
                     eprintln!("unexpected argument: {}", arg);
                     std::process::exit(2);
@@ -215,7 +239,7 @@ fn main() {
     let mut store = ResultStore::new();
 
     if let Some(sweep) = sweep {
-        run_dc_sweep(&mut engine, &mut store, cmd, sweep.clone(), psf_path.as_deref(), precision);
+        run_dc_sweep(&mut engine, &mut store, cmd, sweep.clone(), output_path.as_deref(), output_format, precision);
     } else {
         let plan = AnalysisPlan { cmd };
         let run_id = engine.run_with_store(&plan, &mut store);
@@ -276,33 +300,60 @@ fn main() {
             }
         }
 
-        if let Some(path) = psf_path {
-            let write_result = match run.analysis {
-                AnalysisType::Ac => {
-                    sim_core::psf::write_psf_ac(
-                        &run.ac_frequencies,
-                        &run.node_names,
-                        &run.ac_solutions,
-                        &path,
-                        precision,
-                    )
-                }
-                AnalysisType::Tran => {
-                    sim_core::psf::write_psf_tran(
-                        &run.tran_times,
-                        &run.node_names,
-                        &run.tran_solutions,
-                        &path,
-                        precision,
-                    )
-                }
-                _ => store.write_psf_text(run_id, &path, precision),
+        if let Some(path) = output_path {
+            let write_result = match output_format {
+                OutputFormat::Psf => match run.analysis {
+                    AnalysisType::Ac => {
+                        sim_core::psf::write_psf_ac(
+                            &run.ac_frequencies,
+                            &run.node_names,
+                            &run.ac_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    AnalysisType::Tran => {
+                        sim_core::psf::write_psf_tran(
+                            &run.tran_times,
+                            &run.node_names,
+                            &run.tran_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    _ => store.write_psf_text(run_id, &path, precision),
+                },
+                OutputFormat::Raw => match run.analysis {
+                    AnalysisType::Ac => {
+                        sim_core::raw::write_raw_ac(
+                            &run.ac_frequencies,
+                            &run.node_names,
+                            &run.ac_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    AnalysisType::Tran => {
+                        sim_core::raw::write_raw_tran(
+                            &run.tran_times,
+                            &run.node_names,
+                            &run.tran_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    _ => sim_core::raw::write_raw_op(run, &path, precision),
+                },
             };
             if let Err(err) = write_result {
-                eprintln!("failed to write psf: {}", err);
+                eprintln!("failed to write output: {}", err);
                 std::process::exit(1);
             }
-            println!("psf written: {}", path.display());
+            let format_name = match output_format {
+                OutputFormat::Psf => "psf",
+                OutputFormat::Raw => "raw",
+            };
+            println!("{} written: {}", format_name, path.display());
         }
     }
 }
@@ -505,7 +556,8 @@ fn run_dc_sweep(
     store: &mut ResultStore,
     cmd: AnalysisCmd,
     sweep: DcSweep,
-    psf_path: Option<&Path>,
+    output_path: Option<&Path>,
+    output_format: OutputFormat,
     precision: usize,
 ) {
     if sweep.step <= 0.0 {
@@ -561,20 +613,35 @@ fn run_dc_sweep(
         }
     }
 
-    // Write PSF output if requested
-    if let Some(path) = psf_path {
-        if let Err(err) = sim_core::psf::write_psf_sweep(
-            &sweep.source,
-            &sweep_values,
-            &node_names,
-            &sweep_results,
-            path,
-            precision,
-        ) {
-            eprintln!("failed to write psf: {}", err);
+    // Write output if requested
+    if let Some(path) = output_path {
+        let write_result = match output_format {
+            OutputFormat::Psf => sim_core::psf::write_psf_sweep(
+                &sweep.source,
+                &sweep_values,
+                &node_names,
+                &sweep_results,
+                path,
+                precision,
+            ),
+            OutputFormat::Raw => sim_core::raw::write_raw_sweep(
+                &sweep.source,
+                &sweep_values,
+                &node_names,
+                &sweep_results,
+                path,
+                precision,
+            ),
+        };
+        if let Err(err) = write_result {
+            eprintln!("failed to write output: {}", err);
             std::process::exit(1);
         }
-        println!("psf written: {}", path.display());
+        let format_name = match output_format {
+            OutputFormat::Psf => "psf",
+            OutputFormat::Raw => "raw",
+        };
+        println!("{} written: {}", format_name, path.display());
     }
 }
 
