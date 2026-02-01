@@ -880,7 +880,7 @@ pub fn elaborate_netlist(ast: &NetlistAst) -> ElaboratedNetlist {
 }
 
 pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circuit::Circuit {
-    use crate::circuit::{AnalysisCmd, Circuit, DeviceKind as CircuitDeviceKind, Instance, Model};
+    use crate::circuit::{AnalysisCmd, Circuit, DeviceKind as CircuitDeviceKind, Instance, Model, PolySpec as CircuitPolySpec};
     use std::collections::HashMap;
 
     let mut circuit = Circuit::new();
@@ -1040,6 +1040,71 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
             params.insert(param.key.to_ascii_lowercase(), param.value.clone());
         }
 
+        // Build POLY specification if present
+        let poly = if let Some(ref poly_spec) = device.poly {
+            let is_voltage_controlled = matches!(kind, CircuitDeviceKind::E | CircuitDeviceKind::G);
+            let is_current_controlled = matches!(kind, CircuitDeviceKind::F | CircuitDeviceKind::H);
+
+            if is_voltage_controlled {
+                // For E/G: first 2*n items in coeffs are control node names, rest are coefficients
+                let num_control_nodes = poly_spec.degree * 2;
+                let mut control_nodes = Vec::new();
+                let mut coeffs = Vec::new();
+
+                for (i, item) in poly_spec.coeffs.iter().enumerate() {
+                    if i < num_control_nodes {
+                        // This is a control node name - ensure it exists in the circuit
+                        let node_id = circuit.nodes.ensure_node(item);
+                        // Pair up: (pos, neg) for each control input
+                        if i % 2 == 1 {
+                            let pos_id = circuit.nodes.ensure_node(&poly_spec.coeffs[i - 1]);
+                            control_nodes.push((pos_id.0, node_id.0));
+                        }
+                    } else {
+                        // This is a coefficient - parse as number
+                        if let Some(val) = parse_number_with_suffix(item).or_else(|| item.parse().ok()) {
+                            coeffs.push(val);
+                        }
+                    }
+                }
+
+                Some(CircuitPolySpec {
+                    degree: poly_spec.degree,
+                    coeffs,
+                    control_nodes,
+                    control_sources: Vec::new(),
+                })
+            } else if is_current_controlled {
+                // For F/H: first n items in coeffs are control source names, rest are coefficients
+                let num_control_sources = poly_spec.degree;
+                let mut control_sources = Vec::new();
+                let mut coeffs = Vec::new();
+
+                for (i, item) in poly_spec.coeffs.iter().enumerate() {
+                    if i < num_control_sources {
+                        // This is a control source name
+                        control_sources.push(item.clone());
+                    } else {
+                        // This is a coefficient - parse as number
+                        if let Some(val) = parse_number_with_suffix(item).or_else(|| item.parse().ok()) {
+                            coeffs.push(val);
+                        }
+                    }
+                }
+
+                Some(CircuitPolySpec {
+                    degree: poly_spec.degree,
+                    coeffs,
+                    control_nodes: Vec::new(),
+                    control_sources,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         circuit.instances.insert(Instance {
             name: device.name.clone(),
             kind,
@@ -1050,6 +1115,7 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
             control: device.control.clone(),
             ac_mag: device.ac_mag,
             ac_phase: device.ac_phase,
+            poly,
         });
     }
 

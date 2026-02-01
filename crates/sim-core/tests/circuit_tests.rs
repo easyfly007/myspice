@@ -26,6 +26,7 @@ fn circuit_tables_accept_entries() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     });
 
     assert_eq!(circuit.nodes.id_to_name.len(), 3);

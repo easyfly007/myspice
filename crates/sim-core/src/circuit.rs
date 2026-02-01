@@ -3,6 +3,21 @@ use std::collections::HashMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(pub usize);
 
+/// POLY specification for controlled sources
+/// Represents a polynomial relationship: output = sum of polynomial terms
+#[derive(Debug, Clone)]
+pub struct PolySpec {
+    /// Number of control inputs (n in POLY(n))
+    pub degree: usize,
+    /// Polynomial coefficients as parsed values
+    pub coeffs: Vec<f64>,
+    /// Control node indices for E/G (voltage controlled)
+    /// Each pair (pos, neg) represents one control voltage
+    pub control_nodes: Vec<(usize, usize)>,
+    /// Control source names for F/H (current controlled)
+    pub control_sources: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModelId(pub usize);
 
@@ -96,6 +111,8 @@ pub struct Instance {
     pub ac_mag: Option<f64>,
     /// AC analysis phase in degrees (for voltage/current sources)
     pub ac_phase: Option<f64>,
+    /// POLY specification for controlled sources (E/G/F/H)
+    pub poly: Option<PolySpec>,
 }
 
 #[derive(Debug, Clone)]

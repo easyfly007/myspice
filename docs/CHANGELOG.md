@@ -4,6 +4,53 @@
 
 ---
 
+## 2026-02-01 - POLY 多项式受控源仿真支持
+
+### 已完成
+
+#### POLY 语法完整仿真支持
+
+实现受控源 (E/G/F/H) 的 POLY 多项式语法完整仿真，支持非线性多项式关系和多输入依赖。
+
+**功能特性：**
+- POLY(1) 单输入多项式：支持任意阶 (c0 + c1*x + c2*x² + c3*x³ + ...)
+- POLY(2) 双输入多项式：支持到交叉项 (c0 + c1*x1 + c2*x2 + c3*x1*x2 + c4*x1² + c5*x2²)
+- POLY(n) 多输入：支持线性项组合
+- DC 分析：使用 Newton-Raphson 迭代求解非线性方程
+- AC 分析：在 DC 工作点计算小信号导数进行线性化
+
+**支持的器件：**
+- E (VCVS) - 电压控制电压源
+- G (VCCS) - 电压控制电流源
+- F (CCCS) - 电流控制电流源
+- H (CCVS) - 电流控制电压源
+
+**典型应用：**
+```spice
+* 乘法器: Vout = Va × Vb
+E_mult out 0 POLY(2) a 0 b 0 0 0 0 1.0
+
+* 平方器: Vout = Vin²
+E_sq out 0 POLY(1) in 0 0 0 1.0
+
+* 加法器: Vout = 2×Va + 3×Vb
+E_add out 0 POLY(2) a 0 b 0 0 2.0 3.0
+```
+
+**技术实现：**
+- 在 `circuit.rs` 中新增 `PolySpec` 结构体
+- 在 `Instance` 结构体中添加 `poly` 字段
+- 在 `stamp.rs` 中实现 `evaluate_poly()` 函数计算多项式值和偏导数
+- 为 E/G/F/H 器件添加 `stamp_*_poly()` 和 `stamp_*_poly_ac()` 函数
+
+**修改文件：**
+- `crates/sim-core/src/circuit.rs` - 添加 PolySpec 结构体
+- `crates/sim-core/src/netlist.rs` - 构建 POLY 规格
+- `crates/sim-core/src/stamp.rs` - 多项式评估和 stamp 函数
+- `docs/myspice_user_manual.md` - 更新文档
+
+---
+
 ## 2026-02-01 - Ngspice Raw Format 输出支持
 
 ### 已完成
@@ -224,36 +271,33 @@ R2 out 0 2k
 
 ### 高优先级
 
-1. **POLY 语法支持**
-   - 完善受控源的 POLY 多项式语法
-   - 支持多组控制节点/电流
-
-3. **更多输出格式**
+1. **更多输出格式**
    - JSON 格式导出
    - CSV 格式导出
    - ~~ngspice raw 格式兼容~~ ✓ 已完成
+   - ~~POLY 语法支持~~ ✓ 已完成
 
 ### 中优先级
 
-4. **KLU 稀疏求解器集成**
+2. **KLU 稀疏求解器集成**
    - 完成 KLU 库的 FFI 绑定
    - 大规模电路性能优化
 
-5. **瞬态分析改进**
+3. **瞬态分析改进**
    - 自适应时间步长优化
    - 断点处理 (PWL 波形)
 
-6. **AI 代理集成**
+4. **AI 代理集成**
    - 完善 `tools/ai-agent/` 功能
    - 交互式电路分析
 
 ### 低优先级
 
-7. **GUI 实现**
+5. **GUI 实现**
    - PySide6 界面开发
    - 波形显示
 
-8. **噪声分析**
+6. **噪声分析**
    - 器件噪声模型
    - 噪声传递函数
 
@@ -263,6 +307,7 @@ R2 out 0 2k
 
 | 日期 | 版本 | 主要变更 |
 |------|------|----------|
+| 2026-02-01 | - | **POLY 多项式受控源仿真支持** |
 | 2026-02-01 | - | **Ngspice Raw 格式输出支持** |
 | 2026-01-31 | - | **AC 小信号频域分析实现** |
 | 2026-01-27 | - | **DC Sweep 分析实现** |
@@ -282,10 +327,10 @@ R2 out 0 2k
 - [x] 受控源 (E/G/F/H) 未实现 stamp
 - [x] DC sweep 仅解析未实现
 - [x] AC 分析的器件模型 (R/C/L/V/I/D/M/E/G/F/H)
+- [x] POLY 语法的受控源完整仿真支持
 
 ### 待解决
 - [ ] `spice_datasets_runner` 测试因权限问题失败 (环境问题)
-- [ ] POLY 语法的受控源尚未完全支持
 - [ ] DC sweep PSF 输出格式支持
 
 ---

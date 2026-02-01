@@ -1,8 +1,88 @@
-use crate::circuit::{DeviceKind, Instance};
+use crate::circuit::{DeviceKind, Instance, PolySpec};
 use crate::complex_mna::ComplexStampContext;
 use crate::mna::StampContext;
 use num_complex::Complex64;
 use std::collections::HashMap;
+
+/// Evaluate a POLY(n) polynomial and its derivatives
+///
+/// For POLY(1): f(x) = c0 + c1*x + c2*x² + c3*x³ + ...
+/// For POLY(2): f(x1,x2) = c0 + c1*x1 + c2*x2 + c3*x1*x2 + c4*x1² + c5*x2² + ...
+///
+/// Returns (value, partial_derivatives)
+fn evaluate_poly(poly: &PolySpec, inputs: &[f64]) -> (f64, Vec<f64>) {
+    let n = poly.degree;
+    let coeffs = &poly.coeffs;
+
+    if n == 0 || inputs.len() < n {
+        return (coeffs.first().copied().unwrap_or(0.0), vec![0.0; n]);
+    }
+
+    match n {
+        1 => {
+            // POLY(1): f(x) = c0 + c1*x + c2*x² + c3*x³ + ...
+            let x = inputs[0];
+            let mut value = 0.0;
+            let mut x_power = 1.0;
+
+            // Compute value
+            for &c in coeffs.iter() {
+                value += c * x_power;
+                x_power *= x;
+            }
+
+            // Compute derivative: df/dx = c1 + 2*c2*x + 3*c3*x² + ...
+            let mut deriv = 0.0;
+            let mut x_power = 1.0;
+            for (i, &c) in coeffs.iter().enumerate().skip(1) {
+                deriv += c * (i as f64) * x_power;
+                x_power *= x;
+            }
+
+            (value, vec![deriv])
+        }
+        2 => {
+            // POLY(2): f(x1,x2) = c0 + c1*x1 + c2*x2 + c3*x1*x2 + c4*x1² + c5*x2² + c6*x1²*x2 + ...
+            // Simplified: only use up to cross term for now
+            let x1 = inputs[0];
+            let x2 = inputs[1];
+
+            let c0 = coeffs.get(0).copied().unwrap_or(0.0);
+            let c1 = coeffs.get(1).copied().unwrap_or(0.0);
+            let c2 = coeffs.get(2).copied().unwrap_or(0.0);
+            let c3 = coeffs.get(3).copied().unwrap_or(0.0);
+            let c4 = coeffs.get(4).copied().unwrap_or(0.0);
+            let c5 = coeffs.get(5).copied().unwrap_or(0.0);
+
+            // f = c0 + c1*x1 + c2*x2 + c3*x1*x2 + c4*x1² + c5*x2²
+            let value = c0 + c1*x1 + c2*x2 + c3*x1*x2 + c4*x1*x1 + c5*x2*x2;
+
+            // df/dx1 = c1 + c3*x2 + 2*c4*x1
+            let deriv1 = c1 + c3*x2 + 2.0*c4*x1;
+
+            // df/dx2 = c2 + c3*x1 + 2*c5*x2
+            let deriv2 = c2 + c3*x1 + 2.0*c5*x2;
+
+            (value, vec![deriv1, deriv2])
+        }
+        _ => {
+            // General case: linear terms only for simplicity
+            // f = c0 + c1*x1 + c2*x2 + c3*x3 + ...
+            let c0 = coeffs.get(0).copied().unwrap_or(0.0);
+            let mut value = c0;
+            let mut derivs = Vec::with_capacity(n);
+
+            for i in 0..n {
+                let c = coeffs.get(i + 1).copied().unwrap_or(0.0);
+                let x = inputs.get(i).copied().unwrap_or(0.0);
+                value += c * x;
+                derivs.push(c);
+            }
+
+            (value, derivs)
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub enum StampError {
@@ -41,10 +121,10 @@ impl DeviceStamp for InstanceStamp {
             DeviceKind::M => stamp_mos(ctx, &self.instance, x),
             DeviceKind::L => stamp_inductor_dc(ctx, &self.instance),
             DeviceKind::C => Ok(()), // Capacitor is open circuit in DC
-            DeviceKind::E => stamp_vcvs(ctx, &self.instance),
-            DeviceKind::G => stamp_vccs(ctx, &self.instance),
-            DeviceKind::F => stamp_cccs(ctx, &self.instance),
-            DeviceKind::H => stamp_ccvs(ctx, &self.instance),
+            DeviceKind::E => stamp_vcvs(ctx, &self.instance, x),
+            DeviceKind::G => stamp_vccs(ctx, &self.instance, x),
+            DeviceKind::F => stamp_cccs(ctx, &self.instance, x),
+            DeviceKind::H => stamp_ccvs(ctx, &self.instance, x),
             DeviceKind::X => Ok(()), // Subcircuit instances are already expanded
         }
     }
@@ -76,10 +156,10 @@ impl DeviceStamp for InstanceStamp {
             DeviceKind::I => stamp_current_ac(ctx, &self.instance),
             DeviceKind::D => stamp_diode_ac(ctx, &self.instance, dc_solution),
             DeviceKind::M => stamp_mos_ac(ctx, &self.instance, dc_solution),
-            DeviceKind::E => stamp_vcvs_ac(ctx, &self.instance),
-            DeviceKind::G => stamp_vccs_ac(ctx, &self.instance),
-            DeviceKind::F => stamp_cccs_ac(ctx, &self.instance),
-            DeviceKind::H => stamp_ccvs_ac(ctx, &self.instance),
+            DeviceKind::E => stamp_vcvs_ac(ctx, &self.instance, dc_solution),
+            DeviceKind::G => stamp_vccs_ac(ctx, &self.instance, dc_solution),
+            DeviceKind::F => stamp_cccs_ac(ctx, &self.instance, dc_solution),
+            DeviceKind::H => stamp_ccvs_ac(ctx, &self.instance, dc_solution),
             DeviceKind::X => Ok(()), // Subcircuit instances are already expanded
         }
     }
@@ -505,8 +585,15 @@ fn stamp_inductor_dc(ctx: &mut StampContext, inst: &Instance) -> Result<(), Stam
 
 /// Voltage Controlled Voltage Source (VCVS)
 /// Vout = E * Vin where E is the gain
-/// nodes: [out+, out-, in+, in-]
-fn stamp_vcvs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+/// nodes: [out+, out-, in+, in-] for simple case
+/// nodes: [out+, out-] with POLY for polynomial case
+fn stamp_vcvs(ctx: &mut StampContext, inst: &Instance, x: Option<&[f64]>) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_vcvs_poly(ctx, inst, poly, x);
+    }
+
+    // Simple linear case: Vout = gain * Vin
     if inst.nodes.len() != 4 {
         return Err(StampError::InvalidNodes);
     }
@@ -537,10 +624,104 @@ fn stamp_vcvs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError>
     Ok(())
 }
 
+/// VCVS with POLY syntax
+/// Vout = f(Vin1, Vin2, ...) where f is a polynomial
+fn stamp_vcvs_poly(
+    ctx: &mut StampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    x: Option<&[f64]>,
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Allocate auxiliary variable for output current
+    let k = ctx.allocate_aux(&inst.name);
+
+    // KCL at output nodes
+    ctx.add(out_p, k, 1.0);
+    ctx.add(out_n, k, -1.0);
+
+    // Get control voltages from solution vector
+    let mut control_voltages: Vec<f64> = Vec::with_capacity(poly.degree);
+    if let Some(x) = x {
+        for &(pos, neg) in &poly.control_nodes {
+            let v_pos = x.get(pos).copied().unwrap_or(0.0);
+            let v_neg = x.get(neg).copied().unwrap_or(0.0);
+            control_voltages.push(v_pos - v_neg);
+        }
+    } else {
+        control_voltages.resize(poly.degree, 0.0);
+    }
+
+    // Evaluate polynomial and derivatives
+    let (f_value, derivs) = evaluate_poly(poly, &control_voltages);
+
+    // Check if purely linear (only c0 and c1..cn terms, no higher order)
+    let is_linear = poly.coeffs.len() <= poly.degree + 1;
+
+    if is_linear {
+        // Linear case: V(out) = c0 + c1*V1 + c2*V2 + ...
+        // Stamp directly into matrix
+        ctx.add(k, out_p, 1.0);
+        ctx.add(k, out_n, -1.0);
+
+        // Stamp the constant term
+        let c0 = poly.coeffs.first().copied().unwrap_or(0.0);
+        ctx.add_rhs(k, c0);
+
+        // Stamp the linear coefficients
+        for (i, &(pos, neg)) in poly.control_nodes.iter().enumerate() {
+            let c = poly.coeffs.get(i + 1).copied().unwrap_or(0.0);
+            ctx.add(k, pos, -c);
+            ctx.add(k, neg, c);
+        }
+    } else {
+        // Nonlinear case: use Newton-Raphson linearization
+        // f(x) ≈ f(x0) + f'(x0) * (x - x0)
+        // V(out) = f(V1, V2, ...) is linearized as:
+        // V(out) = f(V1_0, V2_0, ...) + df/dV1 * (V1 - V1_0) + df/dV2 * (V2 - V2_0) + ...
+        // Rearranging: V(out) - df/dV1 * V1 - df/dV2 * V2 - ... = f(x0) - df/dV1 * V1_0 - ...
+
+        ctx.add(k, out_p, 1.0);
+        ctx.add(k, out_n, -1.0);
+
+        // Stamp derivatives as coefficients for control nodes
+        for (i, &(pos, neg)) in poly.control_nodes.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                ctx.add(k, pos, -deriv);
+                ctx.add(k, neg, deriv);
+            }
+        }
+
+        // RHS: f(x0) - sum(df/dVi * Vi_0)
+        let mut rhs = f_value;
+        for (i, &v) in control_voltages.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                rhs -= deriv * v;
+            }
+        }
+        ctx.add_rhs(k, rhs);
+    }
+
+    Ok(())
+}
+
 /// Voltage Controlled Current Source (VCCS)
 /// Iout = G * Vin where G is the transconductance
-/// nodes: [out+, out-, in+, in-]
-fn stamp_vccs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+/// nodes: [out+, out-, in+, in-] for simple case
+/// nodes: [out+, out-] with POLY for polynomial case
+fn stamp_vccs(ctx: &mut StampContext, inst: &Instance, x: Option<&[f64]>) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_vccs_poly(ctx, inst, poly, x);
+    }
+
+    // Simple linear case
     if inst.nodes.len() != 4 {
         return Err(StampError::InvalidNodes);
     }
@@ -565,10 +746,93 @@ fn stamp_vccs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError>
     Ok(())
 }
 
+/// VCCS with POLY syntax
+/// Iout = f(Vin1, Vin2, ...) where f is a polynomial
+fn stamp_vccs_poly(
+    ctx: &mut StampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    x: Option<&[f64]>,
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Get control voltages from solution vector
+    let mut control_voltages: Vec<f64> = Vec::with_capacity(poly.degree);
+    if let Some(x) = x {
+        for &(pos, neg) in &poly.control_nodes {
+            let v_pos = x.get(pos).copied().unwrap_or(0.0);
+            let v_neg = x.get(neg).copied().unwrap_or(0.0);
+            control_voltages.push(v_pos - v_neg);
+        }
+    } else {
+        control_voltages.resize(poly.degree, 0.0);
+    }
+
+    // Evaluate polynomial and derivatives
+    let (f_value, derivs) = evaluate_poly(poly, &control_voltages);
+
+    // Check if purely linear
+    let is_linear = poly.coeffs.len() <= poly.degree + 1;
+
+    if is_linear {
+        // Linear case: I = c0 + c1*V1 + c2*V2 + ...
+        // Stamp constant term as equivalent current source
+        let c0 = poly.coeffs.first().copied().unwrap_or(0.0);
+        ctx.add_rhs(out_p, -c0);
+        ctx.add_rhs(out_n, c0);
+
+        // Stamp the linear coefficients (transconductances)
+        for (i, &(pos, neg)) in poly.control_nodes.iter().enumerate() {
+            let gm = poly.coeffs.get(i + 1).copied().unwrap_or(0.0);
+            ctx.add(out_p, pos, gm);
+            ctx.add(out_p, neg, -gm);
+            ctx.add(out_n, pos, -gm);
+            ctx.add(out_n, neg, gm);
+        }
+    } else {
+        // Nonlinear case: Newton-Raphson linearization
+        // I = f(V1, V2, ...) linearized as:
+        // I = f(x0) + df/dV1 * (V1 - V1_0) + df/dV2 * (V2 - V2_0) + ...
+
+        // Stamp derivatives as transconductances
+        for (i, &(pos, neg)) in poly.control_nodes.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                ctx.add(out_p, pos, deriv);
+                ctx.add(out_p, neg, -deriv);
+                ctx.add(out_n, pos, -deriv);
+                ctx.add(out_n, neg, deriv);
+            }
+        }
+
+        // Equivalent current source: I_eq = f(x0) - sum(df/dVi * Vi_0)
+        let mut i_eq = f_value;
+        for (i, &v) in control_voltages.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                i_eq -= deriv * v;
+            }
+        }
+        ctx.add_rhs(out_p, -i_eq);
+        ctx.add_rhs(out_n, i_eq);
+    }
+
+    Ok(())
+}
+
 /// Current Controlled Current Source (CCCS)
 /// Iout = F * Icontrol where F is the current gain
 /// nodes: [out+, out-], control: name of controlling voltage source
-fn stamp_cccs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+fn stamp_cccs(ctx: &mut StampContext, inst: &Instance, x: Option<&[f64]>) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_cccs_poly(ctx, inst, poly, x);
+    }
+
+    // Simple linear case
     if inst.nodes.len() != 2 {
         return Err(StampError::InvalidNodes);
     }
@@ -599,10 +863,95 @@ fn stamp_cccs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError>
     Ok(())
 }
 
+/// CCCS with POLY syntax
+/// Iout = f(I1, I2, ...) where f is a polynomial of control currents
+fn stamp_cccs_poly(
+    ctx: &mut StampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    x: Option<&[f64]>,
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Get auxiliary variable indices for control sources
+    let mut control_aux_indices: Vec<usize> = Vec::with_capacity(poly.degree);
+    for source_name in &poly.control_sources {
+        if let Some(&aux_id) = ctx.aux.name_to_id.get(source_name) {
+            control_aux_indices.push(ctx.node_count + aux_id);
+        } else {
+            // Control source not yet stamped - this shouldn't happen if ordering is correct
+            return Err(StampError::MissingValue);
+        }
+    }
+
+    // Get control currents from solution vector
+    let mut control_currents: Vec<f64> = Vec::with_capacity(poly.degree);
+    if let Some(x) = x {
+        for &aux_idx in &control_aux_indices {
+            let i = x.get(aux_idx).copied().unwrap_or(0.0);
+            control_currents.push(i);
+        }
+    } else {
+        control_currents.resize(poly.degree, 0.0);
+    }
+
+    // Evaluate polynomial and derivatives
+    let (f_value, derivs) = evaluate_poly(poly, &control_currents);
+
+    // Check if purely linear
+    let is_linear = poly.coeffs.len() <= poly.degree + 1;
+
+    if is_linear {
+        // Linear case: I = c0 + c1*I1 + c2*I2 + ...
+        let c0 = poly.coeffs.first().copied().unwrap_or(0.0);
+        ctx.add_rhs(out_p, -c0);
+        ctx.add_rhs(out_n, c0);
+
+        // Stamp linear coefficients (current gains)
+        for (i, &aux_idx) in control_aux_indices.iter().enumerate() {
+            let gain = poly.coeffs.get(i + 1).copied().unwrap_or(0.0);
+            ctx.add(out_p, aux_idx, gain);
+            ctx.add(out_n, aux_idx, -gain);
+        }
+    } else {
+        // Nonlinear case: Newton-Raphson linearization
+        // Stamp derivatives as gains
+        for (i, &aux_idx) in control_aux_indices.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                ctx.add(out_p, aux_idx, deriv);
+                ctx.add(out_n, aux_idx, -deriv);
+            }
+        }
+
+        // Equivalent current source
+        let mut i_eq = f_value;
+        for (i, &curr) in control_currents.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                i_eq -= deriv * curr;
+            }
+        }
+        ctx.add_rhs(out_p, -i_eq);
+        ctx.add_rhs(out_n, i_eq);
+    }
+
+    Ok(())
+}
+
 /// Current Controlled Voltage Source (CCVS)
 /// Vout = H * Icontrol where H is the transresistance
 /// nodes: [out+, out-], control: name of controlling voltage source
-fn stamp_ccvs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError> {
+fn stamp_ccvs(ctx: &mut StampContext, inst: &Instance, x: Option<&[f64]>) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_ccvs_poly(ctx, inst, poly, x);
+    }
+
+    // Simple linear case
     if inst.nodes.len() != 2 {
         return Err(StampError::InvalidNodes);
     }
@@ -636,6 +985,94 @@ fn stamp_ccvs(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampError>
     ctx.add(k, out_p, 1.0);
     ctx.add(k, out_n, -1.0);
     ctx.add(k, k_control, -gain);
+
+    Ok(())
+}
+
+/// CCVS with POLY syntax
+/// Vout = f(I1, I2, ...) where f is a polynomial of control currents
+fn stamp_ccvs_poly(
+    ctx: &mut StampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    x: Option<&[f64]>,
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Allocate auxiliary variable for output current
+    let k = ctx.allocate_aux(&inst.name);
+
+    // KCL at output nodes
+    ctx.add(out_p, k, 1.0);
+    ctx.add(out_n, k, -1.0);
+
+    // Get auxiliary variable indices for control sources
+    let mut control_aux_indices: Vec<usize> = Vec::with_capacity(poly.degree);
+    for source_name in &poly.control_sources {
+        if let Some(&aux_id) = ctx.aux.name_to_id.get(source_name) {
+            control_aux_indices.push(ctx.node_count + aux_id);
+        } else {
+            return Err(StampError::MissingValue);
+        }
+    }
+
+    // Get control currents from solution vector
+    let mut control_currents: Vec<f64> = Vec::with_capacity(poly.degree);
+    if let Some(x) = x {
+        for &aux_idx in &control_aux_indices {
+            let i = x.get(aux_idx).copied().unwrap_or(0.0);
+            control_currents.push(i);
+        }
+    } else {
+        control_currents.resize(poly.degree, 0.0);
+    }
+
+    // Evaluate polynomial and derivatives
+    let (f_value, derivs) = evaluate_poly(poly, &control_currents);
+
+    // Check if purely linear
+    let is_linear = poly.coeffs.len() <= poly.degree + 1;
+
+    if is_linear {
+        // Linear case: V(out) = c0 + c1*I1 + c2*I2 + ...
+        ctx.add(k, out_p, 1.0);
+        ctx.add(k, out_n, -1.0);
+
+        // Stamp constant term
+        let c0 = poly.coeffs.first().copied().unwrap_or(0.0);
+        ctx.add_rhs(k, c0);
+
+        // Stamp linear coefficients (transresistances)
+        for (i, &aux_idx) in control_aux_indices.iter().enumerate() {
+            let h = poly.coeffs.get(i + 1).copied().unwrap_or(0.0);
+            ctx.add(k, aux_idx, -h);
+        }
+    } else {
+        // Nonlinear case: Newton-Raphson linearization
+        ctx.add(k, out_p, 1.0);
+        ctx.add(k, out_n, -1.0);
+
+        // Stamp derivatives as transresistances
+        for (i, &aux_idx) in control_aux_indices.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                ctx.add(k, aux_idx, -deriv);
+            }
+        }
+
+        // RHS: f(x0) - sum(df/dIi * Ii_0)
+        let mut rhs = f_value;
+        for (i, &curr) in control_currents.iter().enumerate() {
+            if let Some(&deriv) = derivs.get(i) {
+                rhs -= deriv * curr;
+            }
+        }
+        ctx.add_rhs(k, rhs);
+    }
 
     Ok(())
 }
@@ -868,7 +1305,18 @@ fn stamp_mos_ac(
 }
 
 /// VCVS AC stamping (frequency-independent)
-fn stamp_vcvs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+/// For POLY, uses linearized small-signal model from DC operating point
+fn stamp_vcvs_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_vcvs_poly_ac(ctx, inst, poly, dc_solution);
+    }
+
+    // Simple linear case
     if inst.nodes.len() != 4 {
         return Err(StampError::InvalidNodes);
     }
@@ -895,8 +1343,59 @@ fn stamp_vcvs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), S
     Ok(())
 }
 
+/// VCVS POLY AC stamping - linearized around DC operating point
+fn stamp_vcvs_poly_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+    let k = ctx.allocate_aux(&inst.name);
+
+    ctx.add_real(out_p, k, 1.0);
+    ctx.add_real(out_n, k, -1.0);
+    ctx.add_real(k, out_p, 1.0);
+    ctx.add_real(k, out_n, -1.0);
+
+    // Get control voltages from DC solution
+    let mut control_voltages: Vec<f64> = Vec::with_capacity(poly.degree);
+    for &(pos, neg) in &poly.control_nodes {
+        let v_pos = dc_solution.get(pos).copied().unwrap_or(0.0);
+        let v_neg = dc_solution.get(neg).copied().unwrap_or(0.0);
+        control_voltages.push(v_pos - v_neg);
+    }
+
+    // Evaluate derivatives at DC operating point
+    let (_, derivs) = evaluate_poly(poly, &control_voltages);
+
+    // Stamp the linearized gains
+    for (i, &(pos, neg)) in poly.control_nodes.iter().enumerate() {
+        let gain = derivs.get(i).copied().unwrap_or(0.0);
+        ctx.add_real(k, pos, -gain);
+        ctx.add_real(k, neg, gain);
+    }
+
+    Ok(())
+}
+
 /// VCCS AC stamping (frequency-independent)
-fn stamp_vccs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+fn stamp_vccs_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_vccs_poly_ac(ctx, inst, poly, dc_solution);
+    }
+
+    // Simple linear case
     if inst.nodes.len() != 4 {
         return Err(StampError::InvalidNodes);
     }
@@ -919,8 +1418,55 @@ fn stamp_vccs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), S
     Ok(())
 }
 
+/// VCCS POLY AC stamping - linearized around DC operating point
+fn stamp_vccs_poly_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Get control voltages from DC solution
+    let mut control_voltages: Vec<f64> = Vec::with_capacity(poly.degree);
+    for &(pos, neg) in &poly.control_nodes {
+        let v_pos = dc_solution.get(pos).copied().unwrap_or(0.0);
+        let v_neg = dc_solution.get(neg).copied().unwrap_or(0.0);
+        control_voltages.push(v_pos - v_neg);
+    }
+
+    // Evaluate derivatives at DC operating point
+    let (_, derivs) = evaluate_poly(poly, &control_voltages);
+
+    // Stamp the linearized transconductances
+    for (i, &(pos, neg)) in poly.control_nodes.iter().enumerate() {
+        let gm = derivs.get(i).copied().unwrap_or(0.0);
+        ctx.add_real(out_p, pos, gm);
+        ctx.add_real(out_p, neg, -gm);
+        ctx.add_real(out_n, pos, -gm);
+        ctx.add_real(out_n, neg, gm);
+    }
+
+    Ok(())
+}
+
 /// CCCS AC stamping (frequency-independent)
-fn stamp_cccs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+fn stamp_cccs_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_cccs_poly_ac(ctx, inst, poly, dc_solution);
+    }
+
+    // Simple linear case
     if inst.nodes.len() != 2 {
         return Err(StampError::InvalidNodes);
     }
@@ -948,8 +1494,62 @@ fn stamp_cccs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), S
     Ok(())
 }
 
+/// CCCS POLY AC stamping - linearized around DC operating point
+fn stamp_cccs_poly_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+
+    // Get auxiliary variable indices for control sources
+    let mut control_aux_indices: Vec<usize> = Vec::with_capacity(poly.degree);
+    for source_name in &poly.control_sources {
+        if let Some(&aux_id) = ctx.aux.name_to_id.get(source_name) {
+            control_aux_indices.push(ctx.node_count + aux_id);
+        } else {
+            return Err(StampError::MissingValue);
+        }
+    }
+
+    // Get control currents from DC solution
+    let mut control_currents: Vec<f64> = Vec::with_capacity(poly.degree);
+    for &aux_idx in &control_aux_indices {
+        let i = dc_solution.get(aux_idx).copied().unwrap_or(0.0);
+        control_currents.push(i);
+    }
+
+    // Evaluate derivatives at DC operating point
+    let (_, derivs) = evaluate_poly(poly, &control_currents);
+
+    // Stamp the linearized gains
+    for (i, &aux_idx) in control_aux_indices.iter().enumerate() {
+        let gain = derivs.get(i).copied().unwrap_or(0.0);
+        ctx.add_real(out_p, aux_idx, gain);
+        ctx.add_real(out_n, aux_idx, -gain);
+    }
+
+    Ok(())
+}
+
 /// CCVS AC stamping (frequency-independent)
-fn stamp_ccvs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), StampError> {
+fn stamp_ccvs_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    // Check for POLY syntax
+    if let Some(ref poly) = inst.poly {
+        return stamp_ccvs_poly_ac(ctx, inst, poly, dc_solution);
+    }
+
+    // Simple linear case
     if inst.nodes.len() != 2 {
         return Err(StampError::InvalidNodes);
     }
@@ -978,6 +1578,55 @@ fn stamp_ccvs_ac(ctx: &mut ComplexStampContext, inst: &Instance) -> Result<(), S
     ctx.add_real(k, out_p, 1.0);
     ctx.add_real(k, out_n, -1.0);
     ctx.add_real(k, k_control, -gain);
+
+    Ok(())
+}
+
+/// CCVS POLY AC stamping - linearized around DC operating point
+fn stamp_ccvs_poly_ac(
+    ctx: &mut ComplexStampContext,
+    inst: &Instance,
+    poly: &PolySpec,
+    dc_solution: &[f64],
+) -> Result<(), StampError> {
+    if inst.nodes.len() < 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    let out_p = inst.nodes[0].0;
+    let out_n = inst.nodes[1].0;
+    let k = ctx.allocate_aux(&inst.name);
+
+    ctx.add_real(out_p, k, 1.0);
+    ctx.add_real(out_n, k, -1.0);
+    ctx.add_real(k, out_p, 1.0);
+    ctx.add_real(k, out_n, -1.0);
+
+    // Get auxiliary variable indices for control sources
+    let mut control_aux_indices: Vec<usize> = Vec::with_capacity(poly.degree);
+    for source_name in &poly.control_sources {
+        if let Some(&aux_id) = ctx.aux.name_to_id.get(source_name) {
+            control_aux_indices.push(ctx.node_count + aux_id);
+        } else {
+            return Err(StampError::MissingValue);
+        }
+    }
+
+    // Get control currents from DC solution
+    let mut control_currents: Vec<f64> = Vec::with_capacity(poly.degree);
+    for &aux_idx in &control_aux_indices {
+        let i = dc_solution.get(aux_idx).copied().unwrap_or(0.0);
+        control_currents.push(i);
+    }
+
+    // Evaluate derivatives at DC operating point
+    let (_, derivs) = evaluate_poly(poly, &control_currents);
+
+    // Stamp the linearized transresistances
+    for (i, &aux_idx) in control_aux_indices.iter().enumerate() {
+        let h = derivs.get(i).copied().unwrap_or(0.0);
+        ctx.add_real(k, aux_idx, -h);
+    }
 
     Ok(())
 }

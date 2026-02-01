@@ -24,6 +24,7 @@ fn make_mos_instance(name: &str, params: HashMap<String, String>) -> Instance {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     }
 }
 

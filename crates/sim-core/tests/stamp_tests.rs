@@ -16,6 +16,7 @@ fn diode_stamp_allows_basic_nodes() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: diode }.stamp_dc(&mut ctx, None).unwrap();
@@ -34,6 +35,7 @@ fn mos_stamp_allows_basic_nodes() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: mos }.stamp_dc(&mut ctx, None).unwrap();
@@ -52,6 +54,7 @@ fn capacitor_tran_stamp_basic() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     let mut state = TransientState::default();
@@ -74,6 +77,7 @@ fn inductor_tran_stamp_basic() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     let mut state = TransientState::default();
@@ -95,6 +99,7 @@ fn update_transient_state_tracks_cap_voltage() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut state = TransientState::default();
     sim_core::stamp::update_transient_state(&[cap], &[0.0, 2.0], &mut state);
@@ -115,6 +120,7 @@ fn vcvs_stamp_basic() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: vcvs }.stamp_dc(&mut ctx, None).unwrap();
@@ -136,6 +142,7 @@ fn vccs_stamp_basic() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: vccs }.stamp_dc(&mut ctx, None).unwrap();
@@ -159,6 +166,7 @@ fn cccs_stamp_requires_control_source() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: vsrc }.stamp_dc(&mut ctx, None).unwrap();
@@ -174,6 +182,7 @@ fn cccs_stamp_requires_control_source() {
         control: Some("Vctrl".to_string()),
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: cccs }.stamp_dc(&mut ctx, None).unwrap();
@@ -195,6 +204,7 @@ fn ccvs_stamp_requires_control_source() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: vsrc }.stamp_dc(&mut ctx, None).unwrap();
@@ -210,6 +220,7 @@ fn ccvs_stamp_requires_control_source() {
         control: Some("Vctrl".to_string()),
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     InstanceStamp { instance: ccvs }.stamp_dc(&mut ctx, None).unwrap();
@@ -230,6 +241,7 @@ fn subcircuit_instance_stamp_is_noop() {
         control: None,
         ac_mag: None,
         ac_phase: None,
+        poly: None,
     };
     let mut ctx = builder.context();
     // Should succeed without doing anything (subcircuits are already expanded)
