@@ -32,9 +32,16 @@ def build_sim_cli(repo_root: Path) -> Path:
 def main() -> int:
     repo_root = Path(__file__).resolve().parents[1]
     dataset_root = repo_root / "spice-datasets"
+
+    # Check if spice-datasets exists in repo, if not try parent directory
     if not dataset_root.exists():
-        print(f"spice-datasets not found: {dataset_root}")
-        return 2
+        # Try parent directory (../spice-datasets)
+        parent_dataset = repo_root.parent / "spice-datasets"
+        if parent_dataset.exists():
+            dataset_root = parent_dataset
+        else:
+            print(f"spice-datasets not found: {dataset_root} or {parent_dataset}")
+            return 2
 
     netlists = iter_netlists(dataset_root, limit=50)
     if not netlists:
