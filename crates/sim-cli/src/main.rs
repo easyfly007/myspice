@@ -604,7 +604,7 @@ fn parse_number_with_suffix(token: &str) -> Option<f64> {
 fn run_dc_sweep(
     engine: &mut Engine,
     store: &mut ResultStore,
-    cmd: AnalysisCmd,
+    _cmd: AnalysisCmd,
     sweep: DcSweep,
     output_path: Option<&Path>,
     output_format: OutputFormat,
@@ -627,7 +627,8 @@ fn run_dc_sweep(
     let mut guard = 0usize;
     while value <= sweep.stop + sweep.step * 0.5 {
         apply_dc_source(engine, &sweep.source, value);
-        let plan = AnalysisPlan { cmd: cmd.clone() };
+        // Use Op analysis for each sweep point (not Dc which runs its own sweep)
+        let plan = AnalysisPlan { cmd: AnalysisCmd::Op };
         let run_id = engine.run_with_store(&plan, store);
         let run = &store.runs[run_id.0];
         if !matches!(run.status, RunStatus::Converged) {

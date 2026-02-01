@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-02-01 - DC Sweep PSF 输出格式修复
+
+### 已完成
+
+#### DC Sweep 输出格式修复
+
+修复 DC Sweep 分析的输出格式问题，确保所有格式 (PSF/Raw/JSON/CSV) 正确输出扫描结果。
+
+**修复问题：**
+
+1. **扫描值未正确应用**
+   - 问题：DC sweep 时电压源值固定不变
+   - 原因：`run_dc_sweep` 使用 `AnalysisCmd::Dc` 触发引擎内部的完整扫描，忽略了手动设置的值
+   - 修复：改用 `AnalysisCmd::Op` 进行单点分析，由 CLI 控制扫描循环
+
+2. **PSF 格式列对齐问题**
+   - 问题：数据列数多于表头列数（包含了分支电流）
+   - 修复：输出数据时按 node_names 索引取值，与表头保持一致
+
+**验证测试：**
+```
+* DC Sweep test - Resistor divider
+V1 in 0 DC 0
+R1 in out 1k
+R2 out 0 2k
+.dc V1 0 5 1
+.end
+
+# 预期结果：V(out) = V(in) * 2/3
+V1=0 → V(in)=0, V(out)=0
+V1=1 → V(in)=1, V(out)=0.667
+V1=2 → V(in)=2, V(out)=1.333
+V1=3 → V(in)=3, V(out)=2.0
+V1=4 → V(in)=4, V(out)=2.667
+V1=5 → V(in)=5, V(out)=3.333
+```
+
+**修改文件：**
+- `crates/sim-cli/src/main.rs` - 使用 Op 分析代替 Dc 分析进行单点扫描
+- `crates/sim-core/src/psf.rs` - 修复列数对齐问题
+
+---
+
 ## 2026-02-01 - JSON/CSV 输出格式支持
 
 ### 已完成
@@ -387,6 +430,7 @@ R2 out 0 2k
 
 | 日期 | 版本 | 主要变更 |
 |------|------|----------|
+| 2026-02-01 | - | **DC Sweep PSF 输出格式修复** |
 | 2026-02-01 | - | **JSON/CSV 输出格式支持** |
 | 2026-02-01 | - | **POLY 多项式受控源仿真支持** |
 | 2026-02-01 | - | **Ngspice Raw 格式输出支持** |
@@ -409,10 +453,10 @@ R2 out 0 2k
 - [x] DC sweep 仅解析未实现
 - [x] AC 分析的器件模型 (R/C/L/V/I/D/M/E/G/F/H)
 - [x] POLY 语法的受控源完整仿真支持
+- [x] DC sweep PSF 输出格式问题
 
 ### 待解决
 - [ ] `spice_datasets_runner` 测试因权限问题失败 (环境问题)
-- [ ] DC sweep PSF 输出格式支持
 
 ---
 

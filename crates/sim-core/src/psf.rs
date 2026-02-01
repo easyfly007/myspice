@@ -86,11 +86,12 @@ pub fn write_psf_sweep(
     }
     out.push('\n');
 
-    // Data rows
+    // Data rows - only output values for nodes in node_names (same as header)
     for (i, sweep_val) in sweep_values.iter().enumerate() {
         out.push_str(&format!("{:>width$.prec$e}", sweep_val, width = col_width, prec = precision));
         if let Some(solution) = sweep_results.get(i) {
-            for val in solution {
+            for (node_idx, _name) in node_names.iter().enumerate() {
+                let val = solution.get(node_idx).copied().unwrap_or(0.0);
                 out.push_str(&format!("  {:>width$.prec$e}", val, width = col_width, prec = precision));
             }
         }
