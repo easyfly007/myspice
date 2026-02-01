@@ -384,23 +384,159 @@ E_sum out 0 POLY(2) a 0 b 0 0 2.0 3.0
 
 ---
 
-## 5. 仿真结果查看
+## 5. 输出格式
 
-当前阶段已支持 OP 结果输出与 PSF 文本导出（默认 Dense，KLU 可选）。未来输出将支持:
+MySpice 支持多种输出格式，可通过 `-f` 或 `--format` 选项指定。
+
+### 5.1 支持的格式
+
+| 格式 | 扩展名 | 说明 |
+|------|--------|------|
+| PSF | `.psf` | Cadence PSF 文本格式（默认） |
+| Raw | `.raw` | ngspice/LTspice 兼容格式 |
+| JSON | `.json` | 结构化 JSON 格式 |
+| CSV | `.csv` | 逗号分隔值格式 |
+
+### 5.2 命令行使用
+
+```bash
+# PSF 格式（默认）
+sim-cli circuit.cir -o output.psf
+
+# ngspice Raw 格式
+sim-cli circuit.cir -o output.raw -f raw
+
+# JSON 格式
+sim-cli circuit.cir -o output.json -f json
+
+# CSV 格式
+sim-cli circuit.cir -o output.csv -f csv
+```
+
+### 5.3 JSON 格式详解
+
+JSON 格式提供结构化数据输出，包含元信息和仿真数据。
+
+#### OP 分析输出
+
+```json
+{
+  "format": "myspice-json",
+  "version": "0.1.0",
+  "analysis": "Op",
+  "variables": [
+    {"name": "vdd", "type": "voltage", "value": 5.0},
+    {"name": "out", "type": "voltage", "value": 2.5}
+  ]
+}
+```
+
+#### DC Sweep 输出
+
+```json
+{
+  "format": "myspice-json",
+  "version": "0.1.0",
+  "analysis": "Dc",
+  "sweep_source": "V1",
+  "points": 6,
+  "variables": [
+    {"name": "V1", "type": "sweep"},
+    {"name": "in", "type": "voltage"},
+    {"name": "out", "type": "voltage"}
+  ],
+  "data": [
+    [0.0, 5.0, 3.333333],
+    [1.0, 5.0, 3.333333]
+  ]
+}
+```
+
+#### TRAN 分析输出
+
+```json
+{
+  "format": "myspice-json",
+  "version": "0.1.0",
+  "analysis": "Tran",
+  "points": 100,
+  "variables": [
+    {"name": "time", "type": "time"},
+    {"name": "in", "type": "voltage"},
+    {"name": "out", "type": "voltage"}
+  ],
+  "data": [
+    [0.0, 1.0, 0.5],
+    [1e-6, 1.0, 0.632]
+  ]
+}
+```
+
+#### AC 分析输出
+
+```json
+{
+  "format": "myspice-json",
+  "version": "0.1.0",
+  "analysis": "Ac",
+  "points": 10,
+  "variables": [
+    {"name": "frequency", "type": "frequency"},
+    {"name": "out", "type": "complex"}
+  ],
+  "data": [
+    [1.0, {"magnitude_dB": 0.0, "phase_deg": 0.0}],
+    [10.0, {"magnitude_dB": -0.04, "phase_deg": -5.7}]
+  ]
+}
+```
+
+### 5.4 CSV 格式详解
+
+CSV 格式提供简单的逗号分隔数据，便于导入 Excel、Python pandas 等工具。
+
+#### OP 分析输出
+
+```csv
+node,type,value
+vdd,voltage,5.000000e0
+out,voltage,2.500000e0
+```
+
+#### DC Sweep 输出
+
+```csv
+V1,V(in),V(out)
+0.000000e0,5.000000e0,3.333333e0
+1.000000e0,5.000000e0,3.333333e0
+```
+
+#### TRAN 分析输出
+
+```csv
+time,V(in),V(out)
+0.000000e0,1.000000e0,5.000000e-1
+1.000000e-6,1.000000e0,6.321206e-1
+```
+
+#### AC 分析输出
+
+```csv
+frequency,out_dB,out_deg
+1.000000e0,0.000000e0,0.000000e0
+1.000000e1,-4.000000e-2,-5.700000e0
+```
+
+### 5.5 结果解读建议
+
+- **OP**: 查看静态工作点电压与电流
+- **DC Sweep**: 查看参数扫描曲线，验证电路传输特性
+- **TRAN**: 查看时域波形
+- **AC**: 查看频率响应（幅度 dB 和相位度）
 
 当前模型参数支持（基础版）:
 - 二极管: `IS`、`N`/`NJ`
 - MOS: `VTH`/`VTO`、`BETA`/`KP`、`LAMBDA`
-
-- OP/DC/TRAN 的节点电压与器件电流
-- 波形数据查询与导出
-- 更完整的 PSF 文本格式输出
-
-### 4.1 结果解读建议
-
-- OP: 查看静态工作点电压与电流
-- DC Sweep: 查看参数扫描曲线，验证电路传输特性
-- TRAN: 查看时域波形
 
 ---
 

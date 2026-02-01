@@ -4,6 +4,86 @@
 
 ---
 
+## 2026-02-01 - JSON/CSV 输出格式支持
+
+### 已完成
+
+#### JSON/CSV 格式导出
+
+实现 JSON 和 CSV 格式输出，方便与其他工具集成和数据处理。
+
+**功能特性：**
+- 支持所有分析类型：OP、DC sweep、TRAN、AC
+- JSON 格式：结构化数据，包含元信息和数据数组
+- CSV 格式：标准逗号分隔，兼容 Excel、Python pandas 等工具
+
+**CLI 使用：**
+```bash
+# JSON 格式输出
+sim-cli circuit.cir -o output.json -f json
+
+# CSV 格式输出
+sim-cli circuit.cir -o output.csv -f csv
+
+# 其他格式
+sim-cli circuit.cir -o output.psf           # PSF (默认)
+sim-cli circuit.cir -o output.raw -f raw    # ngspice raw
+```
+
+**JSON 格式示例 (DC sweep)：**
+```json
+{
+  "format": "myspice-json",
+  "version": "0.1.0",
+  "analysis": "Dc",
+  "sweep_source": "V1",
+  "points": 6,
+  "variables": [
+    {"name": "V1", "type": "sweep"},
+    {"name": "in", "type": "voltage"},
+    {"name": "out", "type": "voltage"}
+  ],
+  "data": [
+    [0.0, 5.0, 3.333333],
+    [1.0, 5.0, 3.333333]
+  ]
+}
+```
+
+**CSV 格式示例 (DC sweep)：**
+```csv
+V1,V(in),V(out)
+0.000000e0,5.000000e0,3.333333e0
+1.000000e0,5.000000e0,3.333333e0
+```
+
+**新增文件：**
+- `crates/sim-core/src/json_export.rs` - JSON 格式写入函数
+- `crates/sim-core/src/csv_export.rs` - CSV 格式写入函数
+
+**API:**
+```rust
+use sim_core::{json_export, csv_export};
+
+// JSON 导出
+json_export::write_json_op(&run, &path, precision)?;
+json_export::write_json_sweep(source, sweep_values, node_names, results, &path, precision)?;
+json_export::write_json_tran(times, node_names, solutions, &path, precision)?;
+json_export::write_json_ac(frequencies, node_names, ac_solutions, &path, precision)?;
+
+// CSV 导出
+csv_export::write_csv_op(&run, &path, precision)?;
+csv_export::write_csv_sweep(source, sweep_values, node_names, results, &path, precision)?;
+csv_export::write_csv_tran(times, node_names, solutions, &path, precision)?;
+csv_export::write_csv_ac(frequencies, node_names, ac_solutions, &path, precision)?;
+```
+
+### 代码统计
+- 新增文件: 2 (json_export.rs, csv_export.rs)
+- 修改文件: 2 (lib.rs, main.rs)
+
+---
+
 ## 2026-02-01 - POLY 多项式受控源仿真支持
 
 ### 已完成
@@ -272,8 +352,8 @@ R2 out 0 2k
 ### 高优先级
 
 1. **更多输出格式**
-   - JSON 格式导出
-   - CSV 格式导出
+   - ~~JSON 格式导出~~ ✓ 已完成
+   - ~~CSV 格式导出~~ ✓ 已完成
    - ~~ngspice raw 格式兼容~~ ✓ 已完成
    - ~~POLY 语法支持~~ ✓ 已完成
 
@@ -307,6 +387,7 @@ R2 out 0 2k
 
 | 日期 | 版本 | 主要变更 |
 |------|------|----------|
+| 2026-02-01 | - | **JSON/CSV 输出格式支持** |
 | 2026-02-01 | - | **POLY 多项式受控源仿真支持** |
 | 2026-02-01 | - | **Ngspice Raw 格式输出支持** |
 | 2026-01-31 | - | **AC 小信号频域分析实现** |

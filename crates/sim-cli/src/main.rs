@@ -23,7 +23,7 @@ OPTIONS:
     -h, --help              Print help information
     -V, --version           Print version information
     -o, --output <PATH>     Write results to output file
-    -f, --format <FORMAT>   Output format: psf, raw (default: psf)
+    -f, --format <FORMAT>   Output format: psf, raw, json, csv (default: psf)
     -a, --analysis <TYPE>   Analysis type: op, dc, tran, ac (default: from netlist or op)
     --dc-source <NAME>      DC sweep source name
     --dc-start <VALUE>      DC sweep start voltage
@@ -39,6 +39,8 @@ EXAMPLES:
     sim-cli circuit.cir                          # Run analysis from netlist
     sim-cli circuit.cir -o out.psf               # Export to PSF file
     sim-cli circuit.cir -o out.raw -f raw        # Export to ngspice raw format
+    sim-cli circuit.cir -o out.json -f json      # Export to JSON format
+    sim-cli circuit.cir -o out.csv -f csv        # Export to CSV format
     sim-cli circuit.cir -a dc --dc-source V1 \
         --dc-start 0 --dc-stop 5 --dc-step 0.1   # DC sweep
     sim-cli circuit.cir -a tran                  # Transient analysis
@@ -56,6 +58,8 @@ fn print_version() {
 enum OutputFormat {
     Psf,
     Raw,
+    Json,
+    Csv,
 }
 
 fn main() {
@@ -99,8 +103,10 @@ fn main() {
                 output_format = match value.to_ascii_lowercase().as_str() {
                     "psf" => OutputFormat::Psf,
                     "raw" => OutputFormat::Raw,
+                    "json" => OutputFormat::Json,
+                    "csv" => OutputFormat::Csv,
                     _ => {
-                        eprintln!("unknown format: {} (expected: psf, raw)", value);
+                        eprintln!("unknown format: {} (expected: psf, raw, json, csv)", value);
                         std::process::exit(2);
                     }
                 };
@@ -344,6 +350,48 @@ fn main() {
                     }
                     _ => sim_core::raw::write_raw_op(run, &path, precision),
                 },
+                OutputFormat::Json => match run.analysis {
+                    AnalysisType::Ac => {
+                        sim_core::json_export::write_json_ac(
+                            &run.ac_frequencies,
+                            &run.node_names,
+                            &run.ac_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    AnalysisType::Tran => {
+                        sim_core::json_export::write_json_tran(
+                            &run.tran_times,
+                            &run.node_names,
+                            &run.tran_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    _ => sim_core::json_export::write_json_op(run, &path, precision),
+                },
+                OutputFormat::Csv => match run.analysis {
+                    AnalysisType::Ac => {
+                        sim_core::csv_export::write_csv_ac(
+                            &run.ac_frequencies,
+                            &run.node_names,
+                            &run.ac_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    AnalysisType::Tran => {
+                        sim_core::csv_export::write_csv_tran(
+                            &run.tran_times,
+                            &run.node_names,
+                            &run.tran_solutions,
+                            &path,
+                            precision,
+                        )
+                    }
+                    _ => sim_core::csv_export::write_csv_op(run, &path, precision),
+                },
             };
             if let Err(err) = write_result {
                 eprintln!("failed to write output: {}", err);
@@ -352,6 +400,8 @@ fn main() {
             let format_name = match output_format {
                 OutputFormat::Psf => "psf",
                 OutputFormat::Raw => "raw",
+                OutputFormat::Json => "json",
+                OutputFormat::Csv => "csv",
             };
             println!("{} written: {}", format_name, path.display());
         }
@@ -632,6 +682,22 @@ fn run_dc_sweep(
                 path,
                 precision,
             ),
+            OutputFormat::Json => sim_core::json_export::write_json_sweep(
+                &sweep.source,
+                &sweep_values,
+                &node_names,
+                &sweep_results,
+                path,
+                precision,
+            ),
+            OutputFormat::Csv => sim_core::csv_export::write_csv_sweep(
+                &sweep.source,
+                &sweep_values,
+                &node_names,
+                &sweep_results,
+                path,
+                precision,
+            ),
         };
         if let Err(err) = write_result {
             eprintln!("failed to write output: {}", err);
@@ -640,6 +706,8 @@ fn run_dc_sweep(
         let format_name = match output_format {
             OutputFormat::Psf => "psf",
             OutputFormat::Raw => "raw",
+            OutputFormat::Json => "json",
+            OutputFormat::Csv => "csv",
         };
         println!("{} written: {}", format_name, path.display());
     }
