@@ -1,14 +1,20 @@
 use crate::analysis::{
-    estimate_error_weighted, AnalysisPlan, ErrorEstimate, TimeStepConfig, TimeStepState,
+    estimate_lte_milne, AdaptiveStepController, AnalysisPlan, TimeStepConfig,
 };
-use crate::circuit::{AcSweepType, Circuit};
+use crate::circuit::{AcSweepType, Circuit, DeviceKind};
 use crate::complex_mna::ComplexMnaBuilder;
 use crate::complex_solver::create_complex_solver;
 use crate::mna::MnaBuilder;
 use crate::result_store::{AnalysisType, ResultStore, RunId, RunResult, RunStatus};
 use crate::solver::{create_solver, LinearSolver, SolverType};
-use crate::stamp::{update_transient_state, DeviceStamp, InstanceStamp, TransientState};
+use crate::stamp::{
+    update_transient_state, update_transient_state_full, DeviceStamp, InstanceStamp,
+    IntegrationMethod, TransientState,
+};
 use crate::newton::{debug_dump_newton_with_tag, run_newton_with_stepping, NewtonConfig};
+use crate::waveform::{
+    parse_pulse, parse_pwl, BreakpointManager, TransientSource, WaveformSpec,
+};
 use num_complex::Complex64;
 
 pub struct Engine {
@@ -130,8 +136,11 @@ impl Engine {
     /// Run TRAN analysis with specified parameters and store waveform data
     ///
     /// This function performs transient analysis from `tstart` to `tstop` using
-    /// adaptive time stepping. It stores the solution at each accepted time point
-    /// in `tran_times` and `tran_solutions`.
+    /// adaptive time stepping with:
+    /// - **LTE estimation** using Milne's Device (comparing BE and Trapezoidal solutions)
+    /// - **PI Controller** for smooth step size adjustment
+    /// - **Breakpoint handling** for PWL/PULSE source discontinuities
+    /// - **Trapezoidal integration** as the primary method (2nd order accuracy)
     ///
     /// # Arguments
     /// * `tstep` - Suggested time step for output
@@ -153,42 +162,67 @@ impl Engine {
     ) -> RunResult {
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
-        let mut state = TransientState::default();
+        let mut x_prev: Vec<f64>;
+
+        // Initialize transient states for both methods
+        let mut state_be = TransientState::default();
+        state_be.method = IntegrationMethod::BackwardEuler;
+
+        let mut state_trap = TransientState::default();
+        state_trap.method = IntegrationMethod::Trapezoidal;
+
         self.solver.prepare(node_count);
 
-        let config = TimeStepConfig {
+        // Configuration
+        let min_dt = (tstep * 1e-6).max(1e-15);
+        let max_dt = tmax.min(tstop / 10.0);
+        let abs_tol = 1e-9;
+        let rel_tol = 1e-6;
+
+        // Store config for reference (used in error messages)
+        let _config = TimeStepConfig {
             tstep,
             tstop,
             tstart,
             tmax,
-            min_dt: tstep * 1e-6,  // Minimum step is 1e-6 of tstep
-            max_dt: tmax,
-            abs_tol: 1e-9,
-            rel_tol: 1e-6,
+            min_dt,
+            max_dt,
+            abs_tol,
+            rel_tol,
         };
 
-        let mut step_state = TimeStepState {
-            time: config.tstart,
-            step: 0,
-            dt: config.tstep.min(config.tmax),
-            last_dt: config.tstep,
-            accepted: true,
-        };
+        // Initialize adaptive step controller (PI controller)
+        let mut step_controller = AdaptiveStepController::new(min_dt, max_dt);
+
+        // Extract transient sources and breakpoints
+        let transient_sources = self.extract_transient_sources();
+        let mut breakpoint_mgr = BreakpointManager::new();
+        breakpoint_mgr.configure_settling(5, 0.1);
+        breakpoint_mgr.extract_from_sources(&transient_sources, tstop);
+
+        // Time stepping state
+        let mut t = tstart;
+        let mut dt = tstep.min(max_dt);
+        let mut _dt_prev = dt;
+        let mut accepted_steps = 0;
+        let mut _rejected_steps = 0;
+        let mut consecutive_rejects = 0;
+        let max_consecutive_rejects = 10;
 
         let mut final_status = RunStatus::Converged;
         let gnd = self.circuit.nodes.gnd_id.0;
 
-        // Waveform storage vectors
+        // Waveform storage
         let mut tran_times: Vec<f64> = Vec::new();
         let mut tran_solutions: Vec<Vec<f64>> = Vec::new();
 
+        // ====================================================================
         // Run initial DC operating point (t=tstart)
+        // ====================================================================
         let dc_result = run_newton_with_stepping(&NewtonConfig::default(), &mut x, |x, gmin, source_scale| {
             let mut mna = MnaBuilder::new(node_count);
             for inst in &self.circuit.instances.instances {
-                let stamp = InstanceStamp {
-                    instance: inst.clone(),
-                };
+                let stamp = InstanceStamp { instance: inst.clone() };
                 let mut ctx = mna.context_with(gmin, source_scale);
                 let _ = stamp.stamp_dc(&mut ctx, Some(x));
             }
@@ -218,80 +252,159 @@ impl Engine {
             };
         }
 
-        // Store initial point (t=tstart)
-        tran_times.push(config.tstart);
+        // Store initial point
+        tran_times.push(tstart);
         tran_solutions.push(x.clone());
 
-        // Initialize transient state from DC solution
-        update_transient_state(&self.circuit.instances.instances, &x, &mut state);
+        // Initialize transient states from DC solution
+        update_transient_state(&self.circuit.instances.instances, &x, &mut state_be);
+        update_transient_state(&self.circuit.instances.instances, &x, &mut state_trap);
 
-        // Time stepping loop
-        while step_state.time < config.tstop {
-            let mut x_iter = x.clone();
-            let result = run_newton_with_stepping(&NewtonConfig::default(), &mut x_iter, |x, gmin, source_scale| {
+        // ====================================================================
+        // Adaptive Time Stepping Loop
+        // ====================================================================
+        while t < tstop {
+            // Step 1: Limit dt to hit breakpoints
+            dt = breakpoint_mgr.limit_dt(t, dt, min_dt);
+
+            // Step 2: If settling after breakpoint, use smaller step
+            if breakpoint_mgr.is_settling() {
+                dt = breakpoint_mgr.settling_dt(dt, min_dt);
+            }
+
+            // Ensure we don't overshoot tstop
+            if t + dt > tstop {
+                dt = tstop - t;
+            }
+
+            // Step 3: Solve with Backward Euler (for LTE estimation)
+            let mut x_be = x.clone();
+            state_be.method = IntegrationMethod::BackwardEuler;
+            let result_be = run_newton_with_stepping(&NewtonConfig::default(), &mut x_be, |x_iter, gmin, source_scale| {
                 let mut mna = MnaBuilder::new(node_count);
                 for inst in &self.circuit.instances.instances {
-                    let stamp = InstanceStamp {
-                        instance: inst.clone(),
-                    };
+                    let stamp = InstanceStamp { instance: inst.clone() };
                     let mut ctx = mna.context_with(gmin, source_scale);
-                    let _ = stamp.stamp_tran(
-                        &mut ctx,
-                        Some(x),
-                        step_state.dt,
-                        &mut state,
-                    );
+                    let _ = stamp.stamp_tran(&mut ctx, Some(x_iter), dt, &mut state_be);
                 }
                 mna.builder.insert(gnd, gnd, 1.0);
                 let (ap, ai, ax) = mna.builder.finalize();
                 (ap, ai, ax, mna.rhs, mna.builder.n)
             }, self.solver.as_mut());
 
-            debug_dump_newton_with_tag("tran", &result);
-
-            if !result.converged {
-                // Reduce time step and retry
-                step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
-                if step_state.dt <= config.min_dt {
+            if !result_be.converged {
+                // Newton failed - reduce step and retry
+                consecutive_rejects += 1;
+                _rejected_steps += 1;
+                if consecutive_rejects >= max_consecutive_rejects {
                     final_status = RunStatus::Failed;
                     break;
                 }
+                dt = (dt * 0.25).max(min_dt);
                 continue;
             }
 
-            let ErrorEstimate { accept, .. } =
-                estimate_error_weighted(&x, &x_iter, config.abs_tol, config.rel_tol);
-            step_state.accepted = accept;
+            // Step 4: Solve with Trapezoidal (primary method, higher accuracy)
+            let mut x_trap = x.clone();
+            state_trap.method = IntegrationMethod::Trapezoidal;
+            let result_trap = run_newton_with_stepping(&NewtonConfig::default(), &mut x_trap, |x_iter, gmin, source_scale| {
+                let mut mna = MnaBuilder::new(node_count);
+                for inst in &self.circuit.instances.instances {
+                    let stamp = InstanceStamp { instance: inst.clone() };
+                    let mut ctx = mna.context_with(gmin, source_scale);
+                    let _ = stamp.stamp_tran(&mut ctx, Some(x_iter), dt, &mut state_trap);
+                }
+                mna.builder.insert(gnd, gnd, 1.0);
+                let (ap, ai, ax) = mna.builder.finalize();
+                (ap, ai, ax, mna.rhs, mna.builder.n)
+            }, self.solver.as_mut());
+
+            if !result_trap.converged {
+                // Trapezoidal failed - reduce step and retry
+                consecutive_rejects += 1;
+                _rejected_steps += 1;
+                if consecutive_rejects >= max_consecutive_rejects {
+                    final_status = RunStatus::Failed;
+                    break;
+                }
+                dt = (dt * 0.25).max(min_dt);
+                continue;
+            }
+
+            // Step 5: Estimate LTE using Milne's Device
+            let lte = estimate_lte_milne(&x_be, &x_trap, abs_tol, rel_tol);
+
+            // Step 6: Process LTE with PI controller
+            let (accept, dt_new) = step_controller.process_lte(&lte, dt);
 
             if accept {
-                x = x_iter;
-                update_transient_state(&self.circuit.instances.instances, &x, &mut state);
-                step_state.time += step_state.dt;
-                step_state.step += 1;
-                step_state.last_dt = step_state.dt;
+                // Accept step - use Trapezoidal solution (higher accuracy)
+                let t_new = t + dt;
 
-                // Store accepted time point and solution
-                tran_times.push(step_state.time);
+                // Update settling state
+                breakpoint_mgr.update_settling(t, t_new);
+
+                // Update solution and state
+                x_prev = x.clone();
+                x = x_trap;
+
+                // Update transient states with full history (including current for Trap)
+                update_transient_state_full(
+                    &self.circuit.instances.instances,
+                    &x,
+                    &x_prev,
+                    dt,
+                    &mut state_trap,
+                );
+                // Keep BE state in sync
+                update_transient_state(&self.circuit.instances.instances, &x, &mut state_be);
+
+                // Store accepted time point
+                tran_times.push(t_new);
                 tran_solutions.push(x.clone());
 
-                // Increase time step for next iteration (adaptive stepping)
-                if step_state.dt < config.max_dt {
-                    step_state.dt = (step_state.dt * 1.5).min(config.max_dt);
-                }
+                // Update time tracking
+                _dt_prev = dt;
+                t = t_new;
+                accepted_steps += 1;
+                consecutive_rejects = 0;
+
+                // Update dt for next step (from PI controller)
+                dt = dt_new.clamp(min_dt, max_dt);
             } else {
-                // Reduce time step and retry
-                step_state.dt = (step_state.dt * 0.5).max(config.min_dt);
+                // Reject step - reduce dt and retry
+                _rejected_steps += 1;
+                consecutive_rejects += 1;
+
+                if consecutive_rejects >= max_consecutive_rejects {
+                    final_status = RunStatus::Failed;
+                    break;
+                }
+
+                dt = dt_new.clamp(min_dt, max_dt);
             }
         }
+
+        // Generate summary message
+        let stats = step_controller.statistics();
+        let message = Some(format!(
+            "Adaptive: {} accepted, {} rejected ({:.1}% rejection), dt range: {:.2e} to {:.2e}, {} breakpoints",
+            stats.accepted_count,
+            stats.rejected_count,
+            stats.rejection_rate * 100.0,
+            if stats.min_dt_used > 0.0 { stats.min_dt_used } else { min_dt },
+            stats.max_dt_used.max(min_dt),
+            breakpoint_mgr.breakpoint_count()
+        ));
 
         RunResult {
             id: RunId(0),
             analysis: AnalysisType::Tran,
             status: final_status,
-            iterations: step_state.step,
+            iterations: accepted_steps,
             node_names: self.circuit.nodes.id_to_name.clone(),
-            solution: x,  // Final solution
-            message: None,
+            solution: x,
+            message,
             sweep_var: None,
             sweep_values: Vec::new(),
             sweep_solutions: Vec::new(),
@@ -300,6 +413,54 @@ impl Engine {
             ac_frequencies: Vec::new(),
             ac_solutions: Vec::new(),
         }
+    }
+
+    /// Extract transient sources (V/I with PULSE/PWL waveforms) from circuit
+    fn extract_transient_sources(&self) -> Vec<TransientSource> {
+        let mut sources = Vec::new();
+
+        for inst in &self.circuit.instances.instances {
+            match inst.kind {
+                DeviceKind::V | DeviceKind::I => {
+                    if let Some(ref value_str) = inst.value {
+                        let upper = value_str.to_uppercase();
+
+                        // Try to parse PULSE
+                        if upper.starts_with("PULSE") {
+                            if let Some(pulse) = parse_pulse(value_str) {
+                                sources.push(TransientSource {
+                                    name: inst.name.clone(),
+                                    waveform: WaveformSpec::Pulse(pulse),
+                                });
+                                continue;
+                            }
+                        }
+
+                        // Try to parse PWL
+                        if upper.starts_with("PWL") {
+                            if let Some(pwl) = parse_pwl(value_str) {
+                                sources.push(TransientSource {
+                                    name: inst.name.clone(),
+                                    waveform: WaveformSpec::Pwl(pwl),
+                                });
+                                continue;
+                            }
+                        }
+
+                        // Try to parse as DC value
+                        if let Ok(dc_val) = value_str.parse::<f64>() {
+                            sources.push(TransientSource {
+                                name: inst.name.clone(),
+                                waveform: WaveformSpec::Dc(dc_val),
+                            });
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        sources
     }
 
     /// Run DC sweep analysis

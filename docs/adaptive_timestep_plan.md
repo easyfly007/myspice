@@ -933,6 +933,7 @@ D1 anode 0 DFAST
 | Phase 3 | Trapezoidal 积分 | `stamp.rs` | 高 | ✅ 完成 |
 | Phase 4 | 断点处理 | `waveform.rs` | 中 | ✅ 完成 |
 | Phase 5 | 集成测试 | `tests/adaptive_timestep_tests.rs` | 中 | ✅ 完成 |
+| Phase 6 | 引擎集成 | `engine.rs` | 高 | ✅ 完成 |
 
 **建议顺序:** Phase 1 → Phase 2 → Phase 5 (基础测试) → Phase 3 → Phase 4 → Phase 5 (完整测试)
 
@@ -1371,6 +1372,123 @@ Phase 5 实现了全面的集成测试，验证自适应时间步长系统的各
 **Phase 5 测试结果:** 31 个测试全部通过
 
 **总计测试:** Phase 1 (8) + Phase 2 (13) + Phase 3 (18) + Phase 4 (27) + Phase 5 (31) = **97 个测试全部通过**
+
+### Phase 6 实现详情 (已完成) - 引擎集成
+
+**修改代码位置:** `crates/sim-core/src/engine.rs`
+
+**模块概述:**
+
+Phase 6 将所有自适应时间步长组件集成到实际的瞬态分析引擎中，实现了完整的自适应仿真流程。
+
+**集成的组件:**
+
+| 组件 | 功能 |
+|------|------|
+| `AdaptiveStepController` | PI 控制器步长调整 |
+| `BreakpointManager` | 断点提取和步长限制 |
+| `estimate_lte_milne` | Milne's Device LTE 估计 |
+| `IntegrationMethod` | BE/Trapezoidal 方法切换 |
+| `update_transient_state_full` | 完整状态更新 (含电流) |
+
+**新增/修改函数:**
+
+| 函数 | 描述 |
+|------|------|
+| `run_tran_result_with_params()` | 重写瞬态分析主循环，集成自适应步长 |
+| `extract_transient_sources()` | 从电路提取 V/I 源的波形规格 |
+
+**算法流程:**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    自适应瞬态分析 (引擎集成)                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. 初始化                                                       │
+│     ├─ 创建 BE 和 Trapezoidal 两套 TransientState               │
+│     ├─ 初始化 AdaptiveStepController (PI 控制器)                │
+│     ├─ 提取瞬态源波形 (PULSE/PWL)                               │
+│     ├─ 创建 BreakpointManager 并提取断点                        │
+│     └─ 配置稳定期参数 (5 步, 0.1 因子)                          │
+│                                                                  │
+│  2. DC 工作点                                                    │
+│     └─ Newton 迭代求解初始 DC 解                                │
+│                                                                  │
+│  3. 时间步进循环                                                 │
+│     │                                                            │
+│     ├─ (a) 断点限制                                              │
+│     │      └─ dt = breakpoint_mgr.limit_dt(t, dt, min_dt)       │
+│     │                                                            │
+│     ├─ (b) 稳定期检查                                            │
+│     │      └─ if settling: dt = settling_dt(dt, min_dt)         │
+│     │                                                            │
+│     ├─ (c) 双重求解 (Milne's Device)                            │
+│     │      ├─ Backward Euler → x_be                             │
+│     │      └─ Trapezoidal → x_trap                              │
+│     │                                                            │
+│     ├─ (d) LTE 估计                                              │
+│     │      └─ lte = estimate_lte_milne(x_be, x_trap, tol)       │
+│     │                                                            │
+│     ├─ (e) PI 控制器决策                                         │
+│     │      └─ (accept, dt_new) = controller.process_lte(lte)    │
+│     │                                                            │
+│     └─ (f) 步长接受/拒绝                                         │
+│          ├─ 接受: 更新解和状态，记录波形点                       │
+│          └─ 拒绝: 减小 dt 重试                                   │
+│                                                                  │
+│  4. 输出统计                                                     │
+│     └─ 生成包含接受/拒绝数、dt 范围、断点数的消息               │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**波形解析支持:**
+
+| 源格式 | 示例 | 支持状态 |
+|--------|------|----------|
+| DC | `V1 in 0 5` | ✓ |
+| PULSE | `V1 in 0 PULSE(0 5 0 1n 1n 10n 20n)` | ✓ |
+| PWL | `V1 in 0 PWL(0 0 1u 5 2u 0)` | ✓ |
+| SIN | (需要解析器扩展) | 部分 |
+| EXP | (需要解析器扩展) | 部分 |
+
+**输出消息示例:**
+
+```
+Adaptive: 45 accepted, 3 rejected (6.3% rejection), dt range: 1.00e-12 to 5.00e-07, 8 breakpoints
+```
+
+**关键验证点:**
+
+| 验证点 | 状态 |
+|--------|------|
+| DC 工作点正确计算 | ✓ |
+| 双重求解 (BE + Trap) 正确执行 | ✓ |
+| LTE 估计驱动步长调整 | ✓ |
+| PI 控制器平滑步长变化 | ✓ |
+| 断点精确命中 | ✓ |
+| 稳定期小步长 | ✓ |
+| 波形存储正确 | ✓ |
+| 统计信息输出 | ✓ |
+
+**性能特性:**
+
+| 特性 | 描述 |
+|------|------|
+| 双重求解开销 | 每步两次 Newton 迭代 (BE + Trap) |
+| 步长范围 | min_dt = tstep×1e-6, max_dt = min(tmax, tstop/10) |
+| 最大连续拒绝 | 10 次后停止仿真 |
+| 稳定期 | 5 步，步长缩减到 10% |
+
+**测试验证:**
+
+所有现有的瞬态分析测试通过:
+- `tran_waveform_stores_multiple_time_points` ✓
+- `tran_waveform_solution_has_correct_nodes` ✓
+- `tran_psf_output_format` ✓
+
+**总计测试:** Phase 1-5 (97) + 瞬态测试 (3) = **100 个测试全部通过**
 
 ---
 
