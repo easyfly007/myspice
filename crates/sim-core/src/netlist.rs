@@ -75,6 +75,7 @@ pub enum ControlKind {
     Dc,
     Tran,
     Ac,
+    Ic,
     End,
     Other,
 }
@@ -542,6 +543,7 @@ fn map_control_kind(command: &str) -> ControlKind {
         ".dc" => ControlKind::Dc,
         ".tran" => ControlKind::Tran,
         ".ac" => ControlKind::Ac,
+        ".ic" => ControlKind::Ic,
         ".end" => ControlKind::End,
         _ => ControlKind::Other,
     }
@@ -975,6 +977,18 @@ pub fn build_circuit(ast: &NetlistAst, elab: &ElaboratedNetlist) -> crate::circu
                             fstart,
                             fstop,
                         });
+                    }
+                }
+                ControlKind::Ic => {
+                    // Parse .ic v(node1)=value v(node2)=value ...
+                    // The parser splits "v(node)=value" into params with key="v(node)" and value="value"
+                    for param in &ctrl.params {
+                        if let Some(node_name) = parse_ic_node_key(&param.key) {
+                            if let Some(value) = parse_number_with_suffix(&param.value) {
+                                let node_id = circuit.nodes.ensure_node(&node_name);
+                                circuit.initial_conditions.insert(node_id, value);
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -1572,6 +1586,25 @@ fn parse_number_with_suffix(token: &str) -> Option<f64> {
     } else {
         None
     }
+}
+
+/// Parse an IC node key like "v(node)" or "V(NODE)"
+/// Returns the node name (lowercase) if successful
+fn parse_ic_node_key(key: &str) -> Option<String> {
+    let key = key.trim().to_ascii_lowercase();
+
+    // Check for v(node) format
+    if !key.starts_with("v(") || !key.ends_with(')') {
+        return None;
+    }
+
+    // Extract node name (between 'v(' and ')')
+    let node_name = key[2..key.len() - 1].trim().to_string();
+    if node_name.is_empty() {
+        return None;
+    }
+
+    Some(node_name)
 }
 
 fn to_rpn(tokens: Vec<ExprToken>) -> Option<Vec<ExprToken>> {

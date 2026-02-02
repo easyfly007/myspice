@@ -935,6 +935,7 @@ D1 anode 0 DFAST
 | Phase 5 | 集成测试 | `tests/adaptive_timestep_tests.rs` | 中 | ✅ 完成 |
 | Phase 6 | 引擎集成 | `engine.rs` | 高 | ✅ 完成 |
 | Phase 7 | 时变源支持 | `waveform.rs`, `stamp.rs` | 中 | ✅ 完成 |
+| Phase 8 | 初始条件 (.IC) | `circuit.rs`, `netlist.rs`, `engine.rs` | 低 | ✅ 完成 |
 
 **建议顺序:** Phase 1 → Phase 2 → Phase 5 (基础测试) → Phase 3 → Phase 4 → Phase 5 (完整测试)
 
@@ -1687,6 +1688,114 @@ for inst in &self.circuit.instances {
 | 引擎传递正确时间到 stamp | ✓ |
 
 **总计测试:** Phase 1-6 (100) + Phase 7 (12) = **112 个测试全部通过**
+
+### Phase 8 实现详情 (已完成) - 初始条件 (.IC)
+
+**修改代码位置:** `crates/sim-core/src/circuit.rs`, `crates/sim-core/src/netlist.rs`, `crates/sim-core/src/engine.rs`
+
+**模块概述:**
+
+Phase 8 实现了 SPICE 标准的 .IC (Initial Condition) 指令支持，允许用户为瞬态分析指定节点的初始电压。
+
+**SPICE 语法:**
+
+```spice
+.ic v(node1)=value v(node2)=value ...
+```
+
+**示例:**
+
+```spice
+* RC circuit with initial condition
+V1 in 0 DC 5
+R1 in out 1k
+C1 out 0 1n
+.ic v(out)=2.5
+.tran 1n 100n
+.end
+```
+
+**实现变更:**
+
+| 文件 | 变更 |
+|------|------|
+| `circuit.rs` | 添加 `initial_conditions: HashMap<NodeId, f64>` 字段到 Circuit 结构体 |
+| `netlist.rs` | 添加 `Ic` 到 ControlKind 枚举 |
+| `netlist.rs` | 添加 `.ic` 映射到 `map_control_kind()` |
+| `netlist.rs` | 添加 `parse_ic_node_key()` 解析 "v(node)" 格式 |
+| `netlist.rs` | 在 `build_circuit()` 中解析 .ic 指令 |
+| `engine.rs` | 在瞬态分析初始化时应用初始条件作为 Newton 初始猜测 |
+
+**解析器实现:**
+
+```rust
+// netlist.rs
+ControlKind::Ic => {
+    // Parse .ic v(node1)=value v(node2)=value ...
+    // The parser splits "v(node)=value" into params with key="v(node)" and value="value"
+    for param in &ctrl.params {
+        if let Some(node_name) = parse_ic_node_key(&param.key) {
+            if let Some(value) = parse_number_with_suffix(&param.value) {
+                let node_id = circuit.nodes.ensure_node(&node_name);
+                circuit.initial_conditions.insert(node_id, value);
+            }
+        }
+    }
+}
+
+/// Parse an IC node key like "v(node)" or "V(NODE)"
+fn parse_ic_node_key(key: &str) -> Option<String> {
+    let key = key.trim().to_ascii_lowercase();
+    if !key.starts_with("v(") || !key.ends_with(')') {
+        return None;
+    }
+    let node_name = key[2..key.len() - 1].trim().to_string();
+    if node_name.is_empty() { return None; }
+    Some(node_name)
+}
+```
+
+**引擎集成:**
+
+```rust
+// engine.rs - run_tran_result_with_params()
+let node_count = self.circuit.nodes.id_to_name.len();
+let mut x = vec![0.0; node_count];
+
+// Apply initial conditions (.ic directive) as initial guess
+for (node_id, value) in &self.circuit.initial_conditions {
+    if node_id.0 < node_count {
+        x[node_id.0] = *value;
+    }
+}
+```
+
+**行为说明:**
+
+| 特性 | 行为 |
+|------|------|
+| 初始条件用途 | 作为 Newton 迭代的初始猜测 |
+| DC 工作点 | 仍会计算，.ic 仅提供更好的初始值 |
+| 多个 .ic | 支持多行 .ic 指令 |
+| 大小写 | 不敏感 (V(NODE) = v(node)) |
+| 工程后缀 | 支持 (k, m, u, n, p, f, meg) |
+
+**注意:** 当前实现不支持 UIC (Use Initial Conditions) 选项。.ic 值仅作为初始猜测，DC 工作点仍会计算。未来可添加 UIC 支持以跳过 DC 求解。
+
+**测试用例:** 8 个新测试
+
+| 测试名称 | 描述 |
+|----------|------|
+| `netlist_ic_directive_is_recognized` | .ic 指令被识别 |
+| `netlist_ic_single_node_is_parsed` | 单节点 IC 解析 |
+| `netlist_ic_multiple_nodes_is_parsed` | 多节点 IC 解析 |
+| `netlist_ic_with_engineering_suffix` | 工程后缀支持 |
+| `netlist_ic_case_insensitive` | 大小写不敏感 |
+| `netlist_ic_multiple_lines` | 多行 .ic 支持 |
+| `tran_with_initial_conditions` | 瞬态分析集成 |
+| `tran_with_multiple_initial_conditions` | 多 IC 瞬态分析 |
+
+**总计测试:** Phase 1-7 (112) + Phase 8 (8) = **120 个测试全部通过**
 
 ---
 

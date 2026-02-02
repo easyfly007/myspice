@@ -162,6 +162,14 @@ impl Engine {
     ) -> RunResult {
         let node_count = self.circuit.nodes.id_to_name.len();
         let mut x = vec![0.0; node_count];
+
+        // Apply initial conditions (.ic directive) as initial guess
+        for (node_id, value) in &self.circuit.initial_conditions {
+            if node_id.0 < node_count {
+                x[node_id.0] = *value;
+            }
+        }
+
         let mut x_prev: Vec<f64>;
 
         // Initialize transient states for both methods

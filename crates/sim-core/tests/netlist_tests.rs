@@ -338,3 +338,99 @@ fn netlist_elaboration_expands_nested_subckt() {
         vec!["n1".to_string(), "n2".to_string()]
     );
 }
+
+// ============================================================================
+// .IC (Initial Condition) Tests
+// ============================================================================
+
+use sim_core::netlist::build_circuit;
+
+#[test]
+fn netlist_ic_directive_is_recognized() {
+    let input = "R1 in out 1k\n.ic v(in)=5\n.tran 1n 10n\n.end\n";
+    let ast = parse_netlist(input);
+    let ctrl = ast
+        .statements
+        .iter()
+        .find_map(|stmt| match stmt {
+            Stmt::Control(ctrl) if matches!(ctrl.kind, ControlKind::Ic) => Some(ctrl),
+            _ => None,
+        });
+    assert!(ctrl.is_some(), ".ic directive should be recognized");
+}
+
+#[test]
+fn netlist_ic_single_node_is_parsed() {
+    let input = "R1 in out 1k\nR2 out 0 1k\n.ic v(in)=5\n.tran 1n 10n\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    let circuit = build_circuit(&ast, &elab);
+
+    assert_eq!(circuit.initial_conditions.len(), 1);
+
+    // Find the node ID for "in"
+    let in_node_id = circuit.nodes.name_to_id.get("in").expect("node 'in' not found");
+    let ic_value = circuit.initial_conditions.get(in_node_id).expect("IC for 'in' not found");
+    assert!((ic_value - 5.0).abs() < 1e-10, "IC value should be 5.0, got {}", ic_value);
+}
+
+#[test]
+fn netlist_ic_multiple_nodes_is_parsed() {
+    let input = "R1 in mid 1k\nR2 mid out 1k\nR3 out 0 1k\n.ic v(in)=5 v(mid)=2.5 v(out)=1.0\n.tran 1n 10n\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    let circuit = build_circuit(&ast, &elab);
+
+    assert_eq!(circuit.initial_conditions.len(), 3);
+
+    let in_id = circuit.nodes.name_to_id.get("in").unwrap();
+    let mid_id = circuit.nodes.name_to_id.get("mid").unwrap();
+    let out_id = circuit.nodes.name_to_id.get("out").unwrap();
+
+    assert!((circuit.initial_conditions[in_id] - 5.0).abs() < 1e-10);
+    assert!((circuit.initial_conditions[mid_id] - 2.5).abs() < 1e-10);
+    assert!((circuit.initial_conditions[out_id] - 1.0).abs() < 1e-10);
+}
+
+#[test]
+fn netlist_ic_with_engineering_suffix() {
+    let input = "R1 in out 1k\nR2 out 0 1k\n.ic v(in)=3.3 v(out)=1m\n.tran 1n 10n\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    let circuit = build_circuit(&ast, &elab);
+
+    let in_id = circuit.nodes.name_to_id.get("in").unwrap();
+    let out_id = circuit.nodes.name_to_id.get("out").unwrap();
+
+    assert!((circuit.initial_conditions[in_id] - 3.3).abs() < 1e-10);
+    assert!((circuit.initial_conditions[out_id] - 0.001).abs() < 1e-10);
+}
+
+#[test]
+fn netlist_ic_case_insensitive() {
+    let input = "R1 in out 1k\n.IC V(IN)=2.5\n.tran 1n 10n\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    let circuit = build_circuit(&ast, &elab);
+
+    assert_eq!(circuit.initial_conditions.len(), 1);
+    // Node name should be lowercase
+    let in_id = circuit.nodes.name_to_id.get("in").unwrap();
+    assert!((circuit.initial_conditions[in_id] - 2.5).abs() < 1e-10);
+}
+
+#[test]
+fn netlist_ic_multiple_lines() {
+    let input = "R1 in out 1k\nR2 out 0 1k\n.ic v(in)=5\n.ic v(out)=2\n.tran 1n 10n\n.end\n";
+    let ast = parse_netlist(input);
+    let elab = elaborate_netlist(&ast);
+    let circuit = build_circuit(&ast, &elab);
+
+    assert_eq!(circuit.initial_conditions.len(), 2);
+
+    let in_id = circuit.nodes.name_to_id.get("in").unwrap();
+    let out_id = circuit.nodes.name_to_id.get("out").unwrap();
+
+    assert!((circuit.initial_conditions[in_id] - 5.0).abs() < 1e-10);
+    assert!((circuit.initial_conditions[out_id] - 2.0).abs() < 1e-10);
+}

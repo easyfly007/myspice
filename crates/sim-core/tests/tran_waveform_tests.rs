@@ -143,3 +143,98 @@ R2 out 0 1k
     // Clean up
     std::fs::remove_file(&path).ok();
 }
+
+#[test]
+fn tran_with_initial_conditions() {
+    // Simple resistive circuit with initial condition on one node
+    // Note: .ic values are used as initial guess for Newton solver
+    let netlist = r#"
+V1 in 0 DC 5
+R1 in out 1k
+R2 out 0 1k
+.ic v(out)=2.5
+.tran 1u 10u
+.end
+"#;
+    let circuit = parse_and_build(netlist);
+
+    // Verify initial condition was parsed
+    assert_eq!(circuit.initial_conditions.len(), 1, "Should have one initial condition");
+    let out_node_id = circuit.nodes.name_to_id.get("out").expect("out node not found");
+    let ic_value = circuit.initial_conditions.get(out_node_id).expect("IC for out not found");
+    assert!((ic_value - 2.5).abs() < 1e-10, "IC value should be 2.5, got {}", ic_value);
+
+    // Run transient analysis
+    let mut engine = Engine::new_default(circuit);
+    let mut store = ResultStore::new();
+
+    let plan = AnalysisPlan {
+        cmd: AnalysisCmd::Tran {
+            tstep: 1e-6,
+            tstop: 10e-6,
+            tstart: 0.0,
+            tmax: 10e-6,
+        },
+    };
+
+    let run_id = engine.run_with_store(&plan, &mut store);
+    let run = &store.runs[run_id.0];
+
+    // Find the out node index in the solution
+    let out_idx = run.node_names.iter().position(|n| n == "out").expect("out not in node_names");
+
+    // Verify we have time points
+    assert!(!run.tran_times.is_empty(), "Should have time points");
+
+    // With V1=5V DC and resistor divider, the DC operating point is 2.5V
+    // The .ic value matches this, so it helps Newton converge
+    let initial_out_voltage = run.tran_solutions[0][out_idx];
+    assert!((initial_out_voltage - 2.5).abs() < 0.1,
+        "Out voltage should be near 2.5V, got {}", initial_out_voltage);
+}
+
+#[test]
+fn tran_with_multiple_initial_conditions() {
+    // Multiple nodes with initial conditions
+    let netlist = r#"
+V1 in 0 DC 0
+R1 in n1 1k
+R2 n1 n2 1k
+R3 n2 0 1k
+.ic v(n1)=3.3 v(n2)=1.8
+.tran 1n 10n
+.end
+"#;
+    let circuit = parse_and_build(netlist);
+
+    // Verify both initial conditions were parsed
+    assert_eq!(circuit.initial_conditions.len(), 2, "Should have two initial conditions");
+
+    let n1_id = circuit.nodes.name_to_id.get("n1").expect("n1 node not found");
+    let n2_id = circuit.nodes.name_to_id.get("n2").expect("n2 node not found");
+
+    let n1_ic = circuit.initial_conditions.get(n1_id).expect("IC for n1 not found");
+    let n2_ic = circuit.initial_conditions.get(n2_id).expect("IC for n2 not found");
+
+    assert!((n1_ic - 3.3).abs() < 1e-10, "n1 IC should be 3.3, got {}", n1_ic);
+    assert!((n2_ic - 1.8).abs() < 1e-10, "n2 IC should be 1.8, got {}", n2_ic);
+
+    // Run transient analysis
+    let mut engine = Engine::new_default(circuit);
+    let mut store = ResultStore::new();
+
+    let plan = AnalysisPlan {
+        cmd: AnalysisCmd::Tran {
+            tstep: 1e-9,
+            tstop: 10e-9,
+            tstart: 0.0,
+            tmax: 10e-9,
+        },
+    };
+
+    let run_id = engine.run_with_store(&plan, &mut store);
+    let run = &store.runs[run_id.0];
+
+    // Verify transient analysis completed
+    assert!(run.tran_times.len() > 1, "Should have multiple time points");
+}

@@ -177,6 +177,9 @@ pub struct Circuit {
     pub models: ModelTable,
     pub instances: InstanceTable,
     pub analysis: Vec<AnalysisCmd>,
+    /// Initial conditions for transient analysis (.ic directive)
+    /// Maps node ID to initial voltage
+    pub initial_conditions: HashMap<NodeId, f64>,
 }
 
 impl Circuit {
@@ -186,6 +189,7 @@ impl Circuit {
             models: ModelTable::new(),
             instances: InstanceTable::new(),
             analysis: Vec::new(),
+            initial_conditions: HashMap::new(),
         }
     }
 }
