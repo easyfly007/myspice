@@ -575,9 +575,12 @@ R2 out 0 2k
    - ~~完成 KLU 库的 FFI 绑定~~
    - ~~大规模电路性能优化~~
 
-3. **瞬态分析改进**
-   - 自适应时间步长优化
-   - 断点处理 (PWL 波形)
+3. **瞬态分析改进** 🔄 进行中
+   - 自适应时间步长优化 (详见 `docs/adaptive_timestep_plan.md`)
+   - ~~LTE 误差估计 (Milne's Device)~~ ✅ Phase 1 完成
+   - ~~PI 控制器步长调整~~ ✅ Phase 2 完成
+   - Trapezoidal 积分方法 (Phase 3 待实现)
+   - 断点处理 (PWL/PULSE 波形) (Phase 4 待实现)
 
 4. ~~**AI 代理集成**~~ ✓ 已完成 (2026-02-02)
    - ~~完善 `tools/ai-agent/` 功能~~
