@@ -931,7 +931,7 @@ D1 anode 0 DFAST
 | Phase 1 | LTE 估计 | `analysis.rs` | 中 | ✅ 完成 |
 | Phase 2 | PI 控制器 | `analysis.rs` | 中 | ✅ 完成 |
 | Phase 3 | Trapezoidal 积分 | `stamp.rs` | 高 | ✅ 完成 |
-| Phase 4 | 断点处理 | 新建 `breakpoint.rs` | 中 | 待实现 |
+| Phase 4 | 断点处理 | `waveform.rs` | 中 | ✅ 完成 |
 | Phase 5 | 集成测试 | `tests/` | 中 | 待实现 |
 
 **建议顺序:** Phase 1 → Phase 2 → Phase 5 (基础测试) → Phase 3 → Phase 4 → Phase 5 (完整测试)
@@ -1156,6 +1156,145 @@ DeviceKind::C => match state.method {
 - 状态更新正确保存历史值 ✓
 
 **总计测试:** Phase 1 (8) + Phase 2 (13) + Phase 3 (18) = 39 个测试全部通过
+
+### Phase 4 实现详情 (已完成)
+
+**新增代码位置:** `crates/sim-core/src/waveform.rs`
+
+**模块概述:**
+
+Phase 4 实现了完整的波形规格和断点处理功能，包括:
+1. 波形规格 (DC, PULSE, PWL, SIN, EXP)
+2. 波形求值函数
+3. 断点提取和管理
+4. 时间步长限制以精确命中断点
+
+**新增结构体:**
+
+| 结构体 | 描述 |
+|--------|------|
+| `PulseParams` | PULSE 波形参数 (v1, v2, td, tr, tf, pw, per) |
+| `PwlParams` | PWL 波形参数 (时间-值对列表) |
+| `SinParams` | SIN 波形参数 (vo, va, freq, td, theta) |
+| `ExpParams` | EXP 波形参数 (v1, v2, td1, tau1, td2, tau2) |
+| `WaveformSpec` | 波形规格枚举 (Dc, Pulse, Pwl, Sin, Exp) |
+| `BreakpointType` | 断点类型枚举 |
+| `Breakpoint` | 断点信息 (时间, 源名, 类型) |
+| `TransientSource` | 带波形的瞬态源 |
+| `BreakpointManager` | 断点管理器 |
+
+**波形求值算法:**
+
+**1. PULSE 波形:**
+```
+       v2 ─────┬─────┐
+              /│     │\
+             / │     │ \
+            /  │     │  \
+       v1 ─┘   │     │   └─────
+           │   │     │   │
+           td  tr    pw  tf
+           └───────per───────┘
+```
+
+**2. PWL 波形:**
+- 线性插值: `v = v0 + (v1-v0) * (t-t0) / (t1-t0)`
+- 边界处理: 第一点前返回第一值，最后点后返回最后值
+
+**3. SIN 波形:**
+```
+v(t) = vo + va * sin(2π * freq * (t - td)) * exp(-theta * (t - td))
+```
+
+**4. EXP 波形:**
+- 第一阶段 (t < td1): v = v1
+- 第二阶段 (td1 ≤ t < td2): v = v1 + (v2-v1) * (1 - exp(-(t-td1)/tau1))
+- 第三阶段 (t ≥ td2): 加入返回过渡
+
+**断点提取:**
+
+| 源类型 | 断点 |
+|--------|------|
+| PULSE | td, td+tr, td+tr+pw, td+tr+pw+tf, ... (周期性) |
+| PWL | 每个角点 (t1, t2, t3, ...) |
+| EXP | td1, td2 |
+| SIN | td (如果 > 0) |
+
+**BreakpointManager 方法:**
+
+| 方法 | 描述 |
+|------|------|
+| `extract_from_sources()` | 从瞬态源列表提取所有断点 |
+| `next_breakpoint(t)` | 获取时间 t 之后的下一个断点 |
+| `limit_dt(t, proposed_dt, min_margin)` | 限制步长以命中断点 |
+| `crossed_breakpoint(t_prev, t)` | 检查是否跨过断点 |
+| `update_settling(t_prev, t)` | 更新断点后稳定状态 |
+| `settling_dt(normal_dt, dt_min)` | 获取稳定期步长 |
+
+**步长限制算法:**
+
+```rust
+pub fn limit_dt(&self, t: f64, proposed_dt: f64, min_margin: f64) -> f64 {
+    if let Some(next_bp) = self.next_breakpoint(t) {
+        let time_to_bp = next_bp - t;
+
+        // 如果会跨过断点，精确命中它
+        if proposed_dt >= time_to_bp {
+            return time_to_bp.max(min_margin);
+        }
+
+        // 如果接近断点 (90% 以内)，直接命中
+        if proposed_dt > 0.9 * time_to_bp {
+            return time_to_bp;
+        }
+
+        // 如果剩余距离很小，拉伸步长命中断点
+        let remaining = time_to_bp - proposed_dt;
+        if remaining < 0.1 * proposed_dt {
+            return time_to_bp;
+        }
+    }
+    proposed_dt
+}
+```
+
+**断点后稳定 (Settling):**
+
+断点处波形有不连续性，需要小步长捕获瞬态响应:
+- 默认 5 步稳定期
+- 稳定期步长 = normal_dt * 0.1
+
+**波形解析函数:**
+
+| 函数 | 描述 |
+|------|------|
+| `parse_pulse(spec)` | 解析 "PULSE(v1 v2 td tr tf pw per)" |
+| `parse_pwl(spec)` | 解析 "PWL(t1 v1 t2 v2 ...)" |
+| `parse_number_with_suffix(token)` | 解析带后缀的数值 (k, m, u, n, p, f, meg) |
+
+**测试用例:** 27 个单元测试全部通过
+
+| 测试类别 | 测试数量 | 测试名称示例 |
+|----------|----------|-------------|
+| PULSE 求值 | 5 | `test_pulse_before_delay`, `test_pulse_rise`, `test_pulse_high`, `test_pulse_fall`, `test_pulse_periodic` |
+| PWL 求值 | 2 | `test_pwl_interpolation`, `test_pwl_before_and_after` |
+| SIN 求值 | 2 | `test_sin_evaluation`, `test_sin_with_delay` |
+| EXP 求值 | 1 | `test_exp_evaluation` |
+| 断点提取 | 5 | `test_extract_pulse_breakpoints`, `test_extract_pwl_breakpoints`, `test_extract_exp_breakpoints`, etc. |
+| 步长限制 | 3 | `test_limit_dt_no_breakpoints`, `test_limit_dt_hits_breakpoint`, `test_limit_dt_close_to_breakpoint` |
+| 稳定处理 | 2 | `test_settling_after_breakpoint`, `test_settling_dt` |
+| 解析函数 | 3 | `test_parse_pulse`, `test_parse_pwl`, `test_parse_number_with_suffix` |
+| 集成测试 | 1 | `test_full_breakpoint_workflow` |
+
+**关键验证点:**
+- PULSE 各阶段求值正确 (delay, rise, high, fall, low) ✓
+- PWL 线性插值和边界处理正确 ✓
+- 周期性 PULSE 正确处理多周期 ✓
+- 断点精确命中 (步长限制) ✓
+- 断点后稳定期正确触发 ✓
+- 解析器正确处理工程后缀 ✓
+
+**总计测试:** Phase 1 (8) + Phase 2 (13) + Phase 3 (18) + Phase 4 (27) = **66 个测试全部通过**
 
 ---
 

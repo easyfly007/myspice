@@ -15,3 +15,4 @@ pub mod json_export;
 pub mod csv_export;
 pub mod complex_mna;
 pub mod complex_solver;
+pub mod waveform;
