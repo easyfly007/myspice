@@ -384,13 +384,38 @@ curl http://127.0.0.1:3000/v1/nodes
 
 ## AI 交互与 CLI
 
-交互式界面优先做 CLI，并由 AI 代理决定是否调用仿真器 API。推荐方案:
+交互式界面优先做 CLI，并由 AI 代理决定是否调用仿真器 API。
 
-- 仿真器内核: Rust 常驻进程
-- CLI + AI 代理: Python
-- 通讯方式: 本地 HTTP 或 IPC
+### 架构
+
+- 仿真器内核: Rust 常驻进程 (sim-api)
+- CLI + AI 代理: Python (`tools/ai-agent/`)
+- 通讯方式: 本地 HTTP (localhost:3000)
+
+### AI Agent 安装与使用
+
+```bash
+# 安装 AI Agent
+cd tools/ai-agent
+pip install ".[ai]"
+
+# 启动 API 服务器
+cargo run -p sim-api -- --addr 127.0.0.1:3000
+
+# 设置 API Key
+export ANTHROPIC_API_KEY=your-key
+
+# 启动 AI 交互模式
+myspice-agent
+
+# 或直接运行模拟
+myspice-agent op circuit.cir
+myspice-agent dc circuit.cir -s V1 --start 0 --stop 5 --step 0.5
+```
 
 AI 代理通过工具调用协议访问 API，获取电路与仿真结果信息，并以自然语言反馈。
+
+详见 `tools/ai-agent/README.md` 获取完整文档。
 
 ## Netlist 前端语法支持
 
@@ -524,7 +549,17 @@ myspice/
 │
 ├── tools/
 │   ├── ai-agent/                 # Python AI 代理
-│   │   ├── cli.py
+│   │   ├── pyproject.toml        # 包配置
+│   │   ├── README.md             # 使用文档
+│   │   ├── myspice_agent/        # Python 包
+│   │   │   ├── __init__.py
+│   │   │   ├── cli.py            # CLI 入口
+│   │   │   ├── client.py         # HTTP 客户端
+│   │   │   ├── agent.py          # AI 代理
+│   │   │   ├── tools.py          # LLM 工具定义
+│   │   │   ├── formatters.py     # 格式化工具
+│   │   │   ├── config.py         # 配置管理
+│   │   │   └── prompts.py        # 系统提示词
 │   │   └── tests/
 │   └── gui/                      # GUI（待实现）
 │       └── README.md
@@ -611,13 +646,13 @@ cargo test --workspace --exclude sim-cli
 - [x] AC 小信号频域分析（复数 MNA、DEC/OCT/LIN 扫描、PSF 导出）
 
 ### 进行中
-- [ ] AI 代理集成与交互协议
+- [x] AI 代理集成与交互协议 ✅ 已完成 (2026-02-02)
 
 ### 后续计划
 - [ ] 更完善的受控源语法（POLY 细节）
 - [ ] API 服务完善
-- [ ] 更多输出格式（JSON、CSV、ngspice raw）
 - [ ] 大规模网表性能优化
+- [ ] GUI 界面开发
 
 ## GUI 规划（后续阶段）
 

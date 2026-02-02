@@ -10,7 +10,7 @@ use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use sim_core::analysis::AnalysisPlan;
-use sim_core::circuit::{AnalysisCmd, Circuit};
+use sim_core::circuit::{AcSweepType, AnalysisCmd, Circuit};
 use sim_core::engine::Engine;
 use sim_core::netlist::{build_circuit, elaborate_netlist, parse_netlist, parse_netlist_file};
 use sim_core::result_store::{ResultStore, RunId, RunResult};
@@ -54,8 +54,24 @@ struct RunTranRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct RunAcRequest {
+    netlist: Option<String>,
+    path: Option<String>,
+    sweep: Option<String>,  // "dec", "oct", "lin"
+    points: Option<usize>,
+    fstart: Option<f64>,
+    fstop: Option<f64>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ExportRequest {
     path: String,
+    format: Option<String>,  // "psf", "csv", "json", "raw"
+}
+
+#[derive(Debug, Deserialize)]
+struct WaveformQuery {
+    signal: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -67,6 +83,49 @@ struct RunResponse {
     nodes: Vec<String>,
     solution: Vec<f64>,
     message: Option<String>,
+    // DC sweep data
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sweep_var: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sweep_values: Vec<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sweep_solutions: Vec<Vec<f64>>,
+    // TRAN data
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tran_times: Vec<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tran_solutions: Vec<Vec<f64>>,
+    // AC data
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ac_frequencies: Vec<f64>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ac_solutions: Vec<Vec<(f64, f64)>>,  // (magnitude_dB, phase_deg)
+}
+
+#[derive(Debug, Serialize)]
+struct DeviceInfo {
+    name: String,
+    device_type: String,
+    nodes: Vec<String>,
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    parameters: std::collections::HashMap<String, String>,
+}
+
+#[derive(Debug, Serialize)]
+struct DevicesResponse {
+    devices: Vec<DeviceInfo>,
+}
+
+#[derive(Debug, Serialize)]
+struct WaveformResponse {
+    signal: String,
+    analysis: String,
+    x_label: String,
+    x_unit: String,
+    y_label: String,
+    y_unit: String,
+    x_values: Vec<f64>,
+    y_values: Vec<f64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -130,11 +189,14 @@ fn build_router(state: ApiState) -> Router {
         .route("/v1/run/op", post(run_op))
         .route("/v1/run/dc", post(run_dc))
         .route("/v1/run/tran", post(run_tran))
+        .route("/v1/run/ac", post(run_ac))
         .route("/v1/runs", get(list_runs))
         .route("/v1/runs/:id", get(get_run))
         .route("/v1/runs/:id/export", post(export_run))
+        .route("/v1/runs/:id/waveform", get(get_waveform))
         .route("/v1/summary", get(get_summary))
         .route("/v1/nodes", get(get_nodes))
+        .route("/v1/devices", get(get_devices))
         .with_state(state)
 }
 
@@ -159,6 +221,14 @@ async fn run_tran(
     Json(payload): Json<RunTranRequest>,
 ) -> Result<Json<RunResponse>, ApiError> {
     let response = handle_run_tran(&state, payload)?;
+    Ok(Json(response))
+}
+
+async fn run_ac(
+    State(state): State<ApiState>,
+    Json(payload): Json<RunAcRequest>,
+) -> Result<Json<RunResponse>, ApiError> {
+    let response = handle_run_ac(&state, payload)?;
     Ok(Json(response))
 }
 
@@ -236,15 +306,149 @@ async fn get_nodes(State(state): State<ApiState>) -> Result<Json<NodesResponse>,
     }))
 }
 
+async fn get_devices(State(state): State<ApiState>) -> Result<Json<DevicesResponse>, ApiError> {
+    let circuit = load_last_circuit(&state)?;
+    let devices = circuit
+        .instances
+        .instances
+        .iter()
+        .map(|inst| {
+            use sim_core::circuit::DeviceKind;
+            let device_type = match inst.kind {
+                DeviceKind::R => "resistor",
+                DeviceKind::C => "capacitor",
+                DeviceKind::L => "inductor",
+                DeviceKind::V => "voltage_source",
+                DeviceKind::I => "current_source",
+                DeviceKind::D => "diode",
+                DeviceKind::M => "mosfet",
+                DeviceKind::E => "vcvs",
+                DeviceKind::G => "vccs",
+                DeviceKind::F => "cccs",
+                DeviceKind::H => "ccvs",
+                DeviceKind::X => "subcircuit",
+            };
+            // Convert NodeId to node names
+            let node_names: Vec<String> = inst
+                .nodes
+                .iter()
+                .map(|nid| {
+                    circuit
+                        .nodes
+                        .id_to_name
+                        .get(nid.0)
+                        .cloned()
+                        .unwrap_or_else(|| format!("node_{}", nid.0))
+                })
+                .collect();
+            DeviceInfo {
+                name: inst.name.clone(),
+                device_type: device_type.to_string(),
+                nodes: node_names,
+                parameters: inst
+                    .params
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            }
+        })
+        .collect();
+    Ok(Json(DevicesResponse { devices }))
+}
+
+async fn get_waveform(
+    State(state): State<ApiState>,
+    Path(id): Path<usize>,
+    axum::extract::Query(query): axum::extract::Query<WaveformQuery>,
+) -> Result<Json<WaveformResponse>, ApiError> {
+    let store = state
+        .store
+        .lock()
+        .map_err(|_| api_error(StatusCode::INTERNAL_SERVER_ERROR, "STORE_ERROR", "result store is unavailable", None))?;
+    let run = store
+        .runs
+        .get(id)
+        .cloned()
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "RUN_NOT_FOUND", "run_id not found", None))?;
+
+    // Parse signal name (e.g., "V(out)" or "out")
+    let signal_name = query.signal.trim();
+    let node_name = if signal_name.to_uppercase().starts_with("V(") && signal_name.ends_with(')') {
+        &signal_name[2..signal_name.len() - 1]
+    } else {
+        signal_name
+    };
+
+    // Find node index
+    let node_idx = run
+        .node_names
+        .iter()
+        .position(|n| n == node_name)
+        .ok_or_else(|| api_error(StatusCode::NOT_FOUND, "SIGNAL_NOT_FOUND", &format!("signal '{}' not found", signal_name), None))?;
+
+    // Extract waveform based on analysis type
+    let (x_values, y_values, x_label, x_unit, y_label, y_unit) = match run.analysis {
+        sim_core::result_store::AnalysisType::Op => {
+            // Single point
+            (vec![0.0], vec![run.solution.get(node_idx).copied().unwrap_or(0.0)], "point", "", "voltage", "V")
+        }
+        sim_core::result_store::AnalysisType::Dc => {
+            // DC sweep
+            let y: Vec<f64> = run
+                .sweep_solutions
+                .iter()
+                .map(|sol| sol.get(node_idx).copied().unwrap_or(0.0))
+                .collect();
+            (run.sweep_values.clone(), y, "sweep", "V", "voltage", "V")
+        }
+        sim_core::result_store::AnalysisType::Tran => {
+            // Transient
+            let y: Vec<f64> = run
+                .tran_solutions
+                .iter()
+                .map(|sol| sol.get(node_idx).copied().unwrap_or(0.0))
+                .collect();
+            (run.tran_times.clone(), y, "time", "s", "voltage", "V")
+        }
+        sim_core::result_store::AnalysisType::Ac => {
+            // AC - return magnitude in dB
+            let y: Vec<f64> = run
+                .ac_solutions
+                .iter()
+                .map(|freq_data| freq_data.get(node_idx).map(|(mag, _)| *mag).unwrap_or(0.0))
+                .collect();
+            (run.ac_frequencies.clone(), y, "frequency", "Hz", "magnitude", "dB")
+        }
+    };
+
+    Ok(Json(WaveformResponse {
+        signal: signal_name.to_string(),
+        analysis: format!("{:?}", run.analysis),
+        x_label: x_label.to_string(),
+        x_unit: x_unit.to_string(),
+        y_label: y_label.to_string(),
+        y_unit: y_unit.to_string(),
+        x_values,
+        y_values,
+    }))
+}
+
 fn run_to_response(run_id: RunId, run: RunResult) -> RunResponse {
     RunResponse {
         run_id: run_id.0,
         analysis: format!("{:?}", run.analysis),
         status: format!("{:?}", run.status),
         iterations: run.iterations,
-        nodes: run.node_names,
-        solution: run.solution,
-        message: run.message,
+        nodes: run.node_names.clone(),
+        solution: run.solution.clone(),
+        message: run.message.clone(),
+        sweep_var: run.sweep_var.clone(),
+        sweep_values: run.sweep_values.clone(),
+        sweep_solutions: run.sweep_solutions.clone(),
+        tran_times: run.tran_times.clone(),
+        tran_solutions: run.tran_solutions.clone(),
+        ac_frequencies: run.ac_frequencies.clone(),
+        ac_solutions: run.ac_solutions.clone(),
     }
 }
 
@@ -498,6 +702,68 @@ fn handle_run_tran(state: &ApiState, payload: RunTranRequest) -> Result<RunRespo
     store_last_circuit(state, &circuit);
     let cmd = select_tran_cmd(&payload, &circuit)?;
     run_analysis(state, circuit, cmd)
+}
+
+fn handle_run_ac(state: &ApiState, payload: RunAcRequest) -> Result<RunResponse, ApiError> {
+    let input = select_input(payload.netlist.clone(), payload.path.clone())?;
+    let ast = load_netlist(input)?;
+    let elab = elaborate_netlist(&ast);
+    if elab.error_count > 0 {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "ELAB_ERROR",
+            &format!("netlist elaboration failed: {}", elab.error_count),
+            None,
+        ));
+    }
+
+    let circuit = build_circuit(&ast, &elab);
+    store_last_circuit(state, &circuit);
+    let cmd = select_ac_cmd(&payload, &circuit)?;
+    run_analysis(state, circuit, cmd)
+}
+
+fn select_ac_cmd(
+    payload: &RunAcRequest,
+    circuit: &Circuit,
+) -> Result<AnalysisCmd, ApiError> {
+    if payload.fstart.is_some() || payload.fstop.is_some() || payload.points.is_some() {
+        let fstart = payload
+            .fstart
+            .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "INVALID_REQUEST", "missing ac fstart", None))?;
+        let fstop = payload
+            .fstop
+            .ok_or_else(|| api_error(StatusCode::BAD_REQUEST, "INVALID_REQUEST", "missing ac fstop", None))?;
+        let points = payload.points.unwrap_or(10);
+        let sweep_type = match payload.sweep.as_deref() {
+            Some("oct") | Some("OCT") => AcSweepType::Oct,
+            Some("lin") | Some("LIN") => AcSweepType::Lin,
+            _ => AcSweepType::Dec,  // Default to decade
+        };
+        return Ok(AnalysisCmd::Ac {
+            sweep_type,
+            points,
+            fstart,
+            fstop,
+        });
+    }
+
+    if let Some(cmd) = circuit.analysis.iter().find_map(|cmd| {
+        if let AnalysisCmd::Ac { .. } = cmd {
+            Some(cmd.clone())
+        } else {
+            None
+        }
+    }) {
+        return Ok(cmd);
+    }
+
+    Err(api_error(
+        StatusCode::BAD_REQUEST,
+        "INVALID_REQUEST",
+        "ac analysis parameters not provided and not found in netlist",
+        None,
+    ))
 }
 
 fn run_analysis(

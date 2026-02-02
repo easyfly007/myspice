@@ -4,6 +4,96 @@
 
 ---
 
+## 2026-02-02 - AI Agent 集成
+
+### 已完成
+
+#### Python AI Agent (`tools/ai-agent/`)
+
+实现完整的 AI 代理，提供自然语言交互界面和直接命令行模拟功能。
+
+**功能特性：**
+
+1. **CLI 命令行工具**
+   - 直接模拟命令（无需 AI）：`op`, `dc`, `tran`, `ac`
+   - 服务器状态查询：`status`, `runs`
+   - 多格式导出：PSF, CSV, JSON
+
+2. **AI 交互模式**
+   - 基于 Claude API 的自然语言电路分析
+   - 9 个工具函数供 LLM 调用
+   - 对话历史管理
+
+3. **HTTP 客户端**
+   - 与 sim-api 服务通信
+   - 支持所有分析类型：OP, DC, TRAN, AC
+   - 结果查询和导出
+
+4. **配置管理**
+   - 环境变量支持
+   - TOML 配置文件 (`~/.myspice/config.toml`)
+   - 分层优先级：环境变量 > 配置文件 > 默认值
+
+**安装方式：**
+```bash
+cd tools/ai-agent
+pip install .              # 基础安装
+pip install ".[ai]"        # 含 AI 功能
+pip install -e ".[all]"    # 开发安装
+```
+
+**使用示例：**
+```bash
+# 启动 API 服务器
+cargo run -p sim-api -- --addr 127.0.0.1:3000
+
+# CLI 直接命令
+myspice-agent op circuit.cir
+myspice-agent dc circuit.cir -s V1 --start 0 --stop 5 --step 0.5
+myspice-agent tran circuit.cir --tstop 1e-3
+
+# AI 交互模式
+export ANTHROPIC_API_KEY=your-key
+myspice-agent
+```
+
+**AI 工具列表：**
+
+| 工具 | 描述 |
+|------|------|
+| `run_operating_point` | DC 工作点分析 |
+| `run_dc_sweep` | DC 扫描分析 |
+| `run_transient` | 瞬态分析 |
+| `run_ac_analysis` | AC 频率响应分析 |
+| `get_circuit_info` | 查询电路信息 |
+| `get_node_voltage` | 获取节点电压 |
+| `list_simulation_runs` | 列出模拟运行记录 |
+| `get_waveform` | 获取波形数据 |
+| `export_results` | 导出结果文件 |
+
+**新增文件：**
+- `tools/ai-agent/pyproject.toml` - 包配置
+- `tools/ai-agent/myspice_agent/` - Python 包
+  - `__init__.py` - 包导出
+  - `client.py` - HTTP 客户端 (~240 行)
+  - `agent.py` - AI 代理 (~300 行)
+  - `cli.py` - CLI 入口 (~330 行)
+  - `config.py` - 配置管理 (~115 行)
+  - `tools.py` - LLM 工具定义 (~190 行)
+  - `formatters.py` - 结果格式化 (~210 行)
+  - `prompts.py` - 系统提示词
+- `tools/ai-agent/tests/` - 测试文件
+- `tools/ai-agent/README.md` - 使用文档
+
+**依赖：**
+- httpx >= 0.27.0
+- click >= 8.1.0
+- rich >= 13.0.0
+- pydantic >= 2.0.0
+- anthropic >= 0.40.0 (可选，AI 功能)
+
+---
+
 ## 2026-02-02 - KLU 稀疏求解器完整实现
 
 ### 已完成
@@ -489,9 +579,9 @@ R2 out 0 2k
    - 自适应时间步长优化
    - 断点处理 (PWL 波形)
 
-4. **AI 代理集成**
-   - 完善 `tools/ai-agent/` 功能
-   - 交互式电路分析
+4. ~~**AI 代理集成**~~ ✓ 已完成 (2026-02-02)
+   - ~~完善 `tools/ai-agent/` 功能~~
+   - ~~交互式电路分析~~
 
 ### 低优先级
 
@@ -509,6 +599,7 @@ R2 out 0 2k
 
 | 日期 | 版本 | 主要变更 |
 |------|------|----------|
+| 2026-02-02 | - | **AI Agent 集成** |
 | 2026-02-02 | - | **KLU 稀疏求解器完整实现** |
 | 2026-02-01 | - | **DC Sweep PSF 输出格式修复** |
 | 2026-02-01 | - | **JSON/CSV 输出格式支持** |
