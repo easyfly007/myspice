@@ -730,8 +730,111 @@ pub fn parse_pwl(spec: &str) -> Option<PwlParams> {
     Some(PwlParams::new(points))
 }
 
+/// Parse a SIN specification string
+///
+/// Format: `SIN(vo va freq td theta)`
+/// - vo: DC offset
+/// - va: Amplitude
+/// - freq: Frequency in Hz
+/// - td: Delay time (optional, default 0)
+/// - theta: Damping factor (optional, default 0)
+pub fn parse_sin(spec: &str) -> Option<SinParams> {
+    let inner = spec
+        .trim()
+        .strip_prefix("SIN(")
+        .or_else(|| spec.trim().strip_prefix("sin("))
+        .and_then(|s| s.strip_suffix(')'))?;
+
+    let parts: Vec<&str> = inner.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    Some(SinParams {
+        vo: parse_number_with_suffix(parts.get(0)?).unwrap_or(0.0),
+        va: parse_number_with_suffix(parts.get(1)?).unwrap_or(1.0),
+        freq: parts.get(2).and_then(|s| parse_number_with_suffix(s)).unwrap_or(1e6),
+        td: parts.get(3).and_then(|s| parse_number_with_suffix(s)).unwrap_or(0.0),
+        theta: parts.get(4).and_then(|s| parse_number_with_suffix(s)).unwrap_or(0.0),
+    })
+}
+
+/// Parse an EXP specification string
+///
+/// Format: `EXP(v1 v2 td1 tau1 td2 tau2)`
+/// - v1: Initial value
+/// - v2: Target value
+/// - td1: Rise delay time
+/// - tau1: Rise time constant
+/// - td2: Fall delay time
+/// - tau2: Fall time constant
+pub fn parse_exp(spec: &str) -> Option<ExpParams> {
+    let inner = spec
+        .trim()
+        .strip_prefix("EXP(")
+        .or_else(|| spec.trim().strip_prefix("exp("))
+        .and_then(|s| s.strip_suffix(')'))?;
+
+    let parts: Vec<&str> = inner.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    Some(ExpParams {
+        v1: parse_number_with_suffix(parts.get(0)?).unwrap_or(0.0),
+        v2: parse_number_with_suffix(parts.get(1)?).unwrap_or(1.0),
+        td1: parts.get(2).and_then(|s| parse_number_with_suffix(s)).unwrap_or(0.0),
+        tau1: parts.get(3).and_then(|s| parse_number_with_suffix(s)).unwrap_or(1e-9),
+        td2: parts.get(4).and_then(|s| parse_number_with_suffix(s)).unwrap_or(1e-6),
+        tau2: parts.get(5).and_then(|s| parse_number_with_suffix(s)).unwrap_or(1e-9),
+    })
+}
+
+/// Parse a source value string and return the appropriate WaveformSpec
+///
+/// Supports:
+/// - DC value: "5", "3.3", "1k", "1m", etc.
+/// - PULSE: "PULSE(v1 v2 td tr tf pw per)"
+/// - PWL: "PWL(t1 v1 t2 v2 ...)"
+/// - SIN: "SIN(vo va freq td theta)"
+/// - EXP: "EXP(v1 v2 td1 tau1 td2 tau2)"
+pub fn parse_source_value(spec: &str) -> Option<WaveformSpec> {
+    let upper = spec.trim().to_uppercase();
+
+    // Try PULSE
+    if upper.starts_with("PULSE") {
+        return parse_pulse(spec).map(WaveformSpec::Pulse);
+    }
+
+    // Try PWL
+    if upper.starts_with("PWL") {
+        return parse_pwl(spec).map(WaveformSpec::Pwl);
+    }
+
+    // Try SIN
+    if upper.starts_with("SIN") {
+        return parse_sin(spec).map(WaveformSpec::Sin);
+    }
+
+    // Try EXP
+    if upper.starts_with("EXP") {
+        return parse_exp(spec).map(WaveformSpec::Exp);
+    }
+
+    // Try DC value
+    parse_number_with_suffix(spec).map(WaveformSpec::Dc)
+}
+
+/// Evaluate a source value string at a given time
+///
+/// This is the main entry point for time-varying source evaluation.
+/// Returns the source value at time `t`.
+pub fn evaluate_source_at_time(spec: &str, t: f64) -> Option<f64> {
+    parse_source_value(spec).map(|waveform| waveform.evaluate(t))
+}
+
 /// Parse a number with engineering suffix (k, m, u, n, p, f, meg, g, t)
-fn parse_number_with_suffix(token: &str) -> Option<f64> {
+pub fn parse_number_with_suffix(token: &str) -> Option<f64> {
     let lower = token.to_ascii_lowercase();
     let trimmed = lower.trim();
 
@@ -1160,5 +1263,134 @@ mod tests {
         // Should complete with reasonable number of steps
         assert!(steps < 100);
         assert!((t - tstop).abs() < 1e-15);
+    }
+
+    // ========================================================================
+    // SIN/EXP Parsing Tests
+    // ========================================================================
+
+    #[test]
+    fn test_parse_sin() {
+        let spec = "SIN(0 5 1meg 1u 0)";
+        let sin = parse_sin(spec).unwrap();
+        assert!((sin.vo - 0.0).abs() < 1e-10);
+        assert!((sin.va - 5.0).abs() < 1e-10);
+        assert!((sin.freq - 1e6).abs() < 1e-10);
+        assert!((sin.td - 1e-6).abs() < 1e-15);
+        assert!((sin.theta - 0.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_sin_minimal() {
+        let spec = "sin(1 2)";
+        let sin = parse_sin(spec).unwrap();
+        assert!((sin.vo - 1.0).abs() < 1e-10);
+        assert!((sin.va - 2.0).abs() < 1e-10);
+        assert!((sin.freq - 1e6).abs() < 1e-10); // default
+    }
+
+    #[test]
+    fn test_parse_exp() {
+        let spec = "EXP(0 5 1u 100n 10u 200n)";
+        let exp = parse_exp(spec).unwrap();
+        assert!((exp.v1 - 0.0).abs() < 1e-10);
+        assert!((exp.v2 - 5.0).abs() < 1e-10);
+        assert!((exp.td1 - 1e-6).abs() < 1e-15);
+        assert!((exp.tau1 - 100e-9).abs() < 1e-15);
+        assert!((exp.td2 - 10e-6).abs() < 1e-15);
+        assert!((exp.tau2 - 200e-9).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_parse_exp_minimal() {
+        let spec = "exp(0 3.3)";
+        let exp = parse_exp(spec).unwrap();
+        assert!((exp.v1 - 0.0).abs() < 1e-10);
+        assert!((exp.v2 - 3.3).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_parse_source_value_dc() {
+        let spec = "5";
+        let waveform = parse_source_value(spec).unwrap();
+        match waveform {
+            WaveformSpec::Dc(v) => assert!((v - 5.0).abs() < 1e-10),
+            _ => panic!("Expected DC waveform"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_value_pulse() {
+        let spec = "PULSE(0 5 0 1n 1n 10n 20n)";
+        let waveform = parse_source_value(spec).unwrap();
+        match waveform {
+            WaveformSpec::Pulse(p) => {
+                assert!((p.v1 - 0.0).abs() < 1e-10);
+                assert!((p.v2 - 5.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected PULSE waveform"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_value_pwl() {
+        let spec = "PWL(0 0 1u 5)";
+        let waveform = parse_source_value(spec).unwrap();
+        match waveform {
+            WaveformSpec::Pwl(p) => {
+                assert_eq!(p.points.len(), 2);
+            }
+            _ => panic!("Expected PWL waveform"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_value_sin() {
+        let spec = "SIN(0 1 1k)";
+        let waveform = parse_source_value(spec).unwrap();
+        match waveform {
+            WaveformSpec::Sin(s) => {
+                assert!((s.vo - 0.0).abs() < 1e-10);
+                assert!((s.va - 1.0).abs() < 1e-10);
+                assert!((s.freq - 1e3).abs() < 1e-10);
+            }
+            _ => panic!("Expected SIN waveform"),
+        }
+    }
+
+    #[test]
+    fn test_parse_source_value_exp() {
+        let spec = "EXP(0 5 0 1u)";
+        let waveform = parse_source_value(spec).unwrap();
+        match waveform {
+            WaveformSpec::Exp(e) => {
+                assert!((e.v1 - 0.0).abs() < 1e-10);
+                assert!((e.v2 - 5.0).abs() < 1e-10);
+            }
+            _ => panic!("Expected EXP waveform"),
+        }
+    }
+
+    #[test]
+    fn test_evaluate_source_at_time() {
+        // DC
+        assert!((evaluate_source_at_time("5", 0.0).unwrap() - 5.0).abs() < 1e-10);
+        assert!((evaluate_source_at_time("5", 1e-6).unwrap() - 5.0).abs() < 1e-10);
+
+        // PULSE at high level
+        let pulse_val = evaluate_source_at_time("PULSE(0 5 0 0 0 10u 20u)", 5e-6).unwrap();
+        assert!((pulse_val - 5.0).abs() < 1e-10);
+
+        // PULSE at low level
+        let pulse_val = evaluate_source_at_time("PULSE(0 5 0 0 0 10u 20u)", 15e-6).unwrap();
+        assert!((pulse_val - 0.0).abs() < 1e-10);
+
+        // PWL interpolation
+        let pwl_val = evaluate_source_at_time("PWL(0 0 1u 10)", 0.5e-6).unwrap();
+        assert!((pwl_val - 5.0).abs() < 1e-10);
+
+        // SIN at peak
+        let sin_val = evaluate_source_at_time("SIN(0 1 1meg)", 0.25e-6).unwrap();
+        assert!((sin_val - 1.0).abs() < 1e-10);
     }
 }

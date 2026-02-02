@@ -1,6 +1,7 @@
 use crate::circuit::{DeviceKind, Instance, PolySpec};
 use crate::complex_mna::ComplexStampContext;
 use crate::mna::StampContext;
+use crate::waveform::evaluate_source_at_time;
 use num_complex::Complex64;
 use std::collections::HashMap;
 
@@ -99,6 +100,19 @@ pub trait DeviceStamp {
         dt: f64,
         state: &mut TransientState,
     ) -> Result<(), StampError>;
+    /// Stamp for transient analysis with time-varying sources
+    ///
+    /// This method evaluates source waveforms (PULSE, PWL, SIN, EXP) at time `t`
+    /// for accurate transient simulation. For non-source devices, this delegates
+    /// to `stamp_tran`.
+    fn stamp_tran_at_time(
+        &self,
+        ctx: &mut StampContext,
+        x: Option<&[f64]>,
+        t: f64,
+        dt: f64,
+        state: &mut TransientState,
+    ) -> Result<(), StampError>;
     fn stamp_ac(
         &self,
         ctx: &mut ComplexStampContext,
@@ -159,6 +173,44 @@ impl DeviceStamp for InstanceStamp {
                     }
                 }
             }
+            _ => self.stamp_dc(ctx, x),
+        }
+    }
+
+    fn stamp_tran_at_time(
+        &self,
+        ctx: &mut StampContext,
+        x: Option<&[f64]>,
+        t: f64,
+        dt: f64,
+        state: &mut TransientState,
+    ) -> Result<(), StampError> {
+        match self.instance.kind {
+            // Time-varying sources
+            DeviceKind::V => stamp_voltage_at_time(ctx, &self.instance, t),
+            DeviceKind::I => stamp_current_at_time(ctx, &self.instance, t),
+            // Capacitors and inductors use integration method
+            DeviceKind::C => {
+                match state.method {
+                    IntegrationMethod::BackwardEuler => {
+                        stamp_capacitor_tran(ctx, &self.instance, x, dt, state)
+                    }
+                    IntegrationMethod::Trapezoidal => {
+                        stamp_capacitor_trap(ctx, &self.instance, x, dt, state)
+                    }
+                }
+            }
+            DeviceKind::L => {
+                match state.method {
+                    IntegrationMethod::BackwardEuler => {
+                        stamp_inductor_tran(ctx, &self.instance, x, dt, state)
+                    }
+                    IntegrationMethod::Trapezoidal => {
+                        stamp_inductor_trap(ctx, &self.instance, x, dt, state)
+                    }
+                }
+            }
+            // Other devices use DC stamping (no time dependence)
             _ => self.stamp_dc(ctx, x),
         }
     }
@@ -239,6 +291,58 @@ fn stamp_voltage(ctx: &mut StampContext, inst: &Instance) -> Result<(), StampErr
     ctx.add(k, a, 1.0);
     ctx.add(k, b, -1.0);
     ctx.add_rhs(k, value);
+    Ok(())
+}
+
+/// Stamp voltage source with time-varying waveform
+///
+/// Evaluates PULSE, PWL, SIN, or EXP waveforms at time `t`.
+/// Falls back to DC value if waveform parsing fails.
+fn stamp_voltage_at_time(ctx: &mut StampContext, inst: &Instance, t: f64) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    // Evaluate waveform at time t
+    let value = inst
+        .value
+        .as_deref()
+        .and_then(|s| evaluate_source_at_time(s, t))
+        .ok_or(StampError::MissingValue)?;
+
+    let value = value * ctx.source_scale;
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+    let k = ctx.allocate_aux(&inst.name);
+    ctx.add(a, k, 1.0);
+    ctx.add(b, k, -1.0);
+    ctx.add(k, a, 1.0);
+    ctx.add(k, b, -1.0);
+    ctx.add_rhs(k, value);
+    Ok(())
+}
+
+/// Stamp current source with time-varying waveform
+///
+/// Evaluates PULSE, PWL, SIN, or EXP waveforms at time `t`.
+/// Falls back to DC value if waveform parsing fails.
+fn stamp_current_at_time(ctx: &mut StampContext, inst: &Instance, t: f64) -> Result<(), StampError> {
+    if inst.nodes.len() != 2 {
+        return Err(StampError::InvalidNodes);
+    }
+
+    // Evaluate waveform at time t
+    let value = inst
+        .value
+        .as_deref()
+        .and_then(|s| evaluate_source_at_time(s, t))
+        .ok_or(StampError::MissingValue)?;
+
+    let value = value * ctx.source_scale;
+    let a = inst.nodes[0].0;
+    let b = inst.nodes[1].0;
+    ctx.add_rhs(a, -value);
+    ctx.add_rhs(b, value);
     Ok(())
 }
 

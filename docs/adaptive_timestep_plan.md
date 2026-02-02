@@ -934,6 +934,7 @@ D1 anode 0 DFAST
 | Phase 4 | 断点处理 | `waveform.rs` | 中 | ✅ 完成 |
 | Phase 5 | 集成测试 | `tests/adaptive_timestep_tests.rs` | 中 | ✅ 完成 |
 | Phase 6 | 引擎集成 | `engine.rs` | 高 | ✅ 完成 |
+| Phase 7 | 时变源支持 | `waveform.rs`, `stamp.rs` | 中 | ✅ 完成 |
 
 **建议顺序:** Phase 1 → Phase 2 → Phase 5 (基础测试) → Phase 3 → Phase 4 → Phase 5 (完整测试)
 
@@ -1489,6 +1490,203 @@ Adaptive: 45 accepted, 3 rejected (6.3% rejection), dt range: 1.00e-12 to 5.00e-
 - `tran_psf_output_format` ✓
 
 **总计测试:** Phase 1-5 (97) + 瞬态测试 (3) = **100 个测试全部通过**
+
+### Phase 7 实现详情 (已完成) - 时变源支持
+
+**修改代码位置:** `crates/sim-core/src/waveform.rs`, `crates/sim-core/src/stamp.rs`, `crates/sim-core/src/engine.rs`
+
+**模块概述:**
+
+Phase 7 完善了时变源的支持，添加了 SIN/EXP 波形解析器，实现了统一的源求值接口，并将时间参数传递到 stamp 函数中。
+
+**新增/修改功能:**
+
+| 文件 | 函数 | 描述 |
+|------|------|------|
+| `waveform.rs` | `parse_sin()` | 解析 SIN(vo va freq td theta) 格式 |
+| `waveform.rs` | `parse_exp()` | 解析 EXP(v1 v2 td1 tau1 td2 tau2) 格式 |
+| `waveform.rs` | `parse_source_value()` | 统一解析器：自动识别 DC/PULSE/PWL/SIN/EXP |
+| `waveform.rs` | `evaluate_source_at_time()` | 统一求值：解析并计算给定时刻的源值 |
+| `stamp.rs` | `stamp_tran_at_time()` | DeviceStamp trait 新方法，带时间参数 |
+| `stamp.rs` | `stamp_voltage_at_time()` | 电压源时变 stamp |
+| `stamp.rs` | `stamp_current_at_time()` | 电流源时变 stamp |
+
+**SIN 波形解析:**
+
+```rust
+/// Parse a SIN specification string
+/// Format: SIN(vo va freq [td [theta]])
+pub fn parse_sin(spec: &str) -> Option<SinParams> {
+    let inner = spec.trim()
+        .strip_prefix("SIN(")
+        .or_else(|| spec.trim().strip_prefix("sin("))
+        .and_then(|s| s.strip_suffix(')'))?;
+
+    let tokens: Vec<&str> = inner.split_whitespace().collect();
+    if tokens.len() < 3 { return None; }
+
+    Some(SinParams {
+        vo: parse_number_with_suffix(tokens[0])?,
+        va: parse_number_with_suffix(tokens[1])?,
+        freq: parse_number_with_suffix(tokens[2])?,
+        td: tokens.get(3).and_then(|s| parse_number_with_suffix(s)).unwrap_or(0.0),
+        theta: tokens.get(4).and_then(|s| parse_number_with_suffix(s)).unwrap_or(0.0),
+    })
+}
+```
+
+**EXP 波形解析:**
+
+```rust
+/// Parse an EXP specification string
+/// Format: EXP(v1 v2 td1 tau1 td2 tau2)
+pub fn parse_exp(spec: &str) -> Option<ExpParams> {
+    let inner = spec.trim()
+        .strip_prefix("EXP(")
+        .or_else(|| spec.trim().strip_prefix("exp("))
+        .and_then(|s| s.strip_suffix(')'))?;
+
+    let tokens: Vec<&str> = inner.split_whitespace().collect();
+    if tokens.len() < 6 { return None; }
+
+    Some(ExpParams {
+        v1: parse_number_with_suffix(tokens[0])?,
+        v2: parse_number_with_suffix(tokens[1])?,
+        td1: parse_number_with_suffix(tokens[2])?,
+        tau1: parse_number_with_suffix(tokens[3])?,
+        td2: parse_number_with_suffix(tokens[4])?,
+        tau2: parse_number_with_suffix(tokens[5])?,
+    })
+}
+```
+
+**统一源解析器:**
+
+```rust
+/// Parse a source value string and return the appropriate WaveformSpec
+pub fn parse_source_value(spec: &str) -> Option<WaveformSpec> {
+    let upper = spec.trim().to_uppercase();
+
+    if upper.starts_with("PULSE") {
+        return parse_pulse(spec).map(WaveformSpec::Pulse);
+    }
+    if upper.starts_with("PWL") {
+        return parse_pwl(spec).map(WaveformSpec::Pwl);
+    }
+    if upper.starts_with("SIN") {
+        return parse_sin(spec).map(WaveformSpec::Sin);
+    }
+    if upper.starts_with("EXP") {
+        return parse_exp(spec).map(WaveformSpec::Exp);
+    }
+
+    // Try parsing as DC value
+    parse_number_with_suffix(spec).map(WaveformSpec::Dc)
+}
+
+/// Evaluate a source value string at a given time
+pub fn evaluate_source_at_time(spec: &str, t: f64) -> Option<f64> {
+    parse_source_value(spec).map(|waveform| waveform.evaluate(t))
+}
+```
+
+**时变 stamp 实现:**
+
+```rust
+// stamp.rs - DeviceStamp trait extension
+pub trait DeviceStamp {
+    // ... existing methods ...
+
+    /// Stamp device for transient analysis at a specific time
+    fn stamp_tran_at_time(
+        &self,
+        ctx: &mut StampContext,
+        x: Option<&[f64]>,
+        t: f64,
+        dt: f64,
+        state: &mut TransientState,
+    ) -> Result<(), StampError>;
+}
+
+fn stamp_voltage_at_time(ctx: &mut StampContext, inst: &Instance, t: f64) -> Result<(), StampError> {
+    // Evaluate waveform at time t
+    let value = inst.value.as_deref()
+        .and_then(|s| evaluate_source_at_time(s, t))
+        .ok_or(StampError::MissingValue)?;
+    let value = value * ctx.source_scale;
+
+    // Standard voltage source stamping with time-varying value
+    let (n_pos, n_neg) = get_node_indices(ctx, inst)?;
+    let branch = ctx.get_or_create_branch(&inst.name)?;
+
+    ctx.add(n_pos, branch, 1.0);
+    ctx.add(n_neg, branch, -1.0);
+    ctx.add(branch, n_pos, 1.0);
+    ctx.add(branch, n_neg, -1.0);
+    ctx.add_rhs(branch, value);
+
+    Ok(())
+}
+```
+
+**引擎集成:**
+
+在 `engine.rs` 的时间步进循环中，stamp 函数调用现在传递当前时间:
+
+```rust
+// Inside the time stepping loop
+let t_target = t + dt;
+
+// Stamp with time-varying sources
+for inst in &self.circuit.instances {
+    inst.stamp_tran_at_time(&mut ctx, Some(&x), t_target, dt, &mut state)?;
+}
+```
+
+**工程后缀支持:**
+
+`parse_number_with_suffix()` 支持的后缀:
+
+| 后缀 | 乘数 | 示例 |
+|------|------|------|
+| `meg` | 1e6 | 1meg = 1,000,000 |
+| `k` | 1e3 | 10k = 10,000 |
+| `m` | 1e-3 | 5m = 0.005 |
+| `u` | 1e-6 | 100u = 0.0001 |
+| `n` | 1e-9 | 10n = 1e-8 |
+| `p` | 1e-12 | 1p = 1e-12 |
+| `f` | 1e-15 | 100f = 1e-13 |
+
+**测试用例:** 12 个新单元测试
+
+| 测试名称 | 描述 |
+|----------|------|
+| `test_parse_sin` | SIN 参数解析 |
+| `test_parse_sin_with_defaults` | SIN 缺省参数处理 |
+| `test_parse_exp` | EXP 参数解析 |
+| `test_parse_source_value_dc` | DC 值解析 |
+| `test_parse_source_value_pulse` | PULSE 字符串解析 |
+| `test_parse_source_value_pwl` | PWL 字符串解析 |
+| `test_parse_source_value_sin` | SIN 字符串解析 |
+| `test_parse_source_value_exp` | EXP 字符串解析 |
+| `test_evaluate_source_at_time_dc` | DC 求值 |
+| `test_evaluate_source_at_time_pulse` | PULSE 时变求值 |
+| `test_evaluate_source_at_time_sin` | SIN 时变求值 |
+| `test_evaluate_source_at_time_exp` | EXP 时变求值 |
+
+**关键验证点:**
+
+| 验证点 | 状态 |
+|--------|------|
+| SIN 解析正确处理 5 参数 | ✓ |
+| EXP 解析正确处理 6 参数 | ✓ |
+| 统一解析器自动识别格式 | ✓ |
+| 工程后缀正确转换 | ✓ |
+| 时变源在指定时刻求值 | ✓ |
+| stamp 函数接收时间参数 | ✓ |
+| 引擎传递正确时间到 stamp | ✓ |
+
+**总计测试:** Phase 1-6 (100) + Phase 7 (12) = **112 个测试全部通过**
 
 ---
 

@@ -277,6 +277,9 @@ impl Engine {
                 dt = tstop - t;
             }
 
+            // Calculate target time for this step
+            let t_target = t + dt;
+
             // Step 3: Solve with Backward Euler (for LTE estimation)
             let mut x_be = x.clone();
             state_be.method = IntegrationMethod::BackwardEuler;
@@ -285,7 +288,8 @@ impl Engine {
                 for inst in &self.circuit.instances.instances {
                     let stamp = InstanceStamp { instance: inst.clone() };
                     let mut ctx = mna.context_with(gmin, source_scale);
-                    let _ = stamp.stamp_tran(&mut ctx, Some(x_iter), dt, &mut state_be);
+                    // Use stamp_tran_at_time to evaluate time-varying sources at t_target
+                    let _ = stamp.stamp_tran_at_time(&mut ctx, Some(x_iter), t_target, dt, &mut state_be);
                 }
                 mna.builder.insert(gnd, gnd, 1.0);
                 let (ap, ai, ax) = mna.builder.finalize();
@@ -312,7 +316,8 @@ impl Engine {
                 for inst in &self.circuit.instances.instances {
                     let stamp = InstanceStamp { instance: inst.clone() };
                     let mut ctx = mna.context_with(gmin, source_scale);
-                    let _ = stamp.stamp_tran(&mut ctx, Some(x_iter), dt, &mut state_trap);
+                    // Use stamp_tran_at_time to evaluate time-varying sources at t_target
+                    let _ = stamp.stamp_tran_at_time(&mut ctx, Some(x_iter), t_target, dt, &mut state_trap);
                 }
                 mna.builder.insert(gnd, gnd, 1.0);
                 let (ap, ai, ax) = mna.builder.finalize();
