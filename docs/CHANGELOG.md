@@ -4,6 +4,85 @@
 
 ---
 
+## 2026-02-02 - KLU 稀疏求解器完整实现
+
+### 已完成
+
+#### KLU Sparse Solver FFI Bindings
+
+完整实现 SuiteSparse KLU 稀疏求解器的 FFI 绑定和 Rust 封装。
+
+**功能特性：**
+
+1. **完整 FFI 绑定**
+   - 完整的 `klu_common` 结构体定义（所有控制参数和统计字段）
+   - 64 位索引支持（`klu_l_*` 系列函数）
+   - KLU 状态码定义和错误信息转换
+   - 支持 `klu_rcond` 条件数估计
+
+2. **高效重因子化 (Refactorization)**
+   - 当稀疏模式不变时自动使用 `klu_refactor`
+   - 比完整因子化快约 3 倍
+   - 自动跟踪因子化和重因子化次数
+
+3. **增强的错误处理**
+   - 详细的错误类型：`SingularMatrix`, `IllConditioned`, `InvalidMatrix`, `KluError`
+   - KLU 状态码到错误消息的映射
+   - 条件数监控和警告
+
+4. **配置选项**
+   - `set_pivot_tolerance(tol)`: 设置主元容差 (0.001-1.0)
+   - `set_ordering(method)`: 选择排序算法 (AMD/COLAMD/Natural)
+   - `set_btf(enable)`: 启用/禁用块三角分解
+
+5. **统计信息**
+   - 因子化/重因子化计数
+   - L/U 因子非零元素数
+   - 内存使用量
+   - 浮点运算数
+
+**跨平台构建支持：**
+
+- Linux: 自动检测系统安装的 SuiteSparse
+- macOS: 支持 Homebrew 安装
+- Windows: 支持 vcpkg 和手动构建
+- 静态/动态链接选项 (`KLU_STATIC=1`)
+
+**环境变量：**
+```bash
+SUITESPARSE_DIR=/path/to/suitesparse  # 根目录
+KLU_LIB_DIR=/path/to/lib              # 库目录
+KLU_INCLUDE_DIR=/path/to/include      # 头文件目录
+KLU_STATIC=1                          # 静态链接
+```
+
+**使用示例：**
+```bash
+# Linux
+sudo apt-get install libsuitesparse-dev
+cargo build --features klu
+
+# macOS
+brew install suite-sparse
+export SUITESPARSE_DIR=$(brew --prefix suite-sparse)
+cargo build --features klu
+```
+
+**新增文件：**
+- `docs/klu_solver.md` - 完整文档（安装、API、性能调优）
+- `crates/sim-core/tests/klu_tests.rs` - 单元测试
+
+**修改文件：**
+- `crates/sim-core/src/solver.rs` - 完整 FFI 和 KluSolver 实现
+- `crates/sim-core/build.rs` - 跨平台构建配置
+
+**代码统计：**
+- solver.rs: ~680 行（含完整 FFI 和实现）
+- klu_tests.rs: ~475 行（含 KLU 特定测试）
+- klu_solver.md: ~400 行文档
+
+---
+
 ## 2026-02-01 - DC Sweep PSF 输出格式修复
 
 ### 已完成
@@ -402,9 +481,9 @@ R2 out 0 2k
 
 ### 中优先级
 
-2. **KLU 稀疏求解器集成**
-   - 完成 KLU 库的 FFI 绑定
-   - 大规模电路性能优化
+2. ~~**KLU 稀疏求解器集成**~~ ✓ 已完成 (2026-02-02)
+   - ~~完成 KLU 库的 FFI 绑定~~
+   - ~~大规模电路性能优化~~
 
 3. **瞬态分析改进**
    - 自适应时间步长优化
@@ -430,6 +509,7 @@ R2 out 0 2k
 
 | 日期 | 版本 | 主要变更 |
 |------|------|----------|
+| 2026-02-02 | - | **KLU 稀疏求解器完整实现** |
 | 2026-02-01 | - | **DC Sweep PSF 输出格式修复** |
 | 2026-02-01 | - | **JSON/CSV 输出格式支持** |
 | 2026-02-01 | - | **POLY 多项式受控源仿真支持** |
