@@ -932,7 +932,7 @@ D1 anode 0 DFAST
 | Phase 2 | PI 控制器 | `analysis.rs` | 中 | ✅ 完成 |
 | Phase 3 | Trapezoidal 积分 | `stamp.rs` | 高 | ✅ 完成 |
 | Phase 4 | 断点处理 | `waveform.rs` | 中 | ✅ 完成 |
-| Phase 5 | 集成测试 | `tests/` | 中 | 待实现 |
+| Phase 5 | 集成测试 | `tests/adaptive_timestep_tests.rs` | 中 | ✅ 完成 |
 
 **建议顺序:** Phase 1 → Phase 2 → Phase 5 (基础测试) → Phase 3 → Phase 4 → Phase 5 (完整测试)
 
@@ -1295,6 +1295,82 @@ pub fn limit_dt(&self, t: f64, proposed_dt: f64, min_margin: f64) -> f64 {
 - 解析器正确处理工程后缀 ✓
 
 **总计测试:** Phase 1 (8) + Phase 2 (13) + Phase 3 (18) + Phase 4 (27) = **66 个测试全部通过**
+
+### Phase 5 实现详情 (已完成)
+
+**新增代码位置:** `crates/sim-core/tests/adaptive_timestep_tests.rs`
+
+**模块概述:**
+
+Phase 5 实现了全面的集成测试，验证自适应时间步长系统的各组件协同工作。测试覆盖 9 个类别，共 31 个测试用例。
+
+**测试类别:**
+
+| 类别 | 测试数量 | 描述 |
+|------|----------|------|
+| 1. 波形求值 | 4 | PULSE/PWL/SIN/EXP 完整波形测试 |
+| 2. 断点处理 | 4 | 多源断点提取、步长限制、稳定期 |
+| 3. LTE 估计 | 4 | Milne's Device、差分法、误差定位 |
+| 4. PI 控制器 | 4 | 步长调整、历史效应、紧急处理 |
+| 5. 积分方法 | 2 | 方法枚举、状态历史存储 |
+| 6. 完整工作流 | 4 | RC/LC 电路、PWL 精确命中、能量守恒 |
+| 7. 解析测试 | 2 | PULSE/PWL 字符串解析 |
+| 8. 边界情况 | 5 | 零时间、单点、极小/极大步长、空管理器 |
+| 9. 统计监控 | 2 | 控制器统计、波形断点检测 |
+
+**关键测试用例:**
+
+**波形求值集成测试:**
+- `test_pulse_waveform_full_cycle` - 完整 PULSE 周期 (100MHz, 3.3V CMOS)
+- `test_pwl_waveform_ramp` - PWL 斜坡和保持
+- `test_sin_waveform_frequency` - SIN 频率准确性
+- `test_exp_waveform_transition` - EXP 时间常数响应
+
+**断点处理集成测试:**
+- `test_breakpoint_extraction_from_multiple_sources` - 多源断点合并
+- `test_breakpoint_step_limiting` - 步长精确命中断点
+- `test_breakpoint_settling_behavior` - 断点后稳定期
+- `test_breakpoint_simulation_workflow` - 完整仿真循环
+
+**全工作流测试:**
+- `test_full_adaptive_workflow` - 完整自适应循环
+  - 波形 → 断点 → LTE → PI控制 → 稳定期
+- `test_rc_time_constant_accuracy` - RC 电路精度验证
+  - 解析解对比: V(t) = V0 * (1 - exp(-t/RC))
+- `test_lc_oscillator_energy_conservation` - LC 振荡器能量守恒
+  - Trapezoidal 方法应保持能量
+- `test_pwl_exact_breakpoint_hits` - PWL 断点精确命中
+  - 验证仿真时间点包含所有 PWL 角点
+
+**边界情况测试:**
+- `test_zero_duration_pulse` - 零上升/下降时间
+- `test_single_point_pwl` - 单点 PWL (常数)
+- `test_very_small_time_steps` - dt_min = 1e-18 (阿秒级)
+- `test_very_large_time_steps` - dt_max = 1e-6 (微秒级)
+- `test_empty_breakpoint_manager` - 空断点管理器
+
+**测试验证的关键点:**
+
+| 验证点 | 测试覆盖 |
+|--------|---------|
+| PULSE 波形各阶段正确 | ✓ |
+| PWL 线性插值和边界 | ✓ |
+| SIN 频率和相位 | ✓ |
+| EXP 时间常数 | ✓ |
+| 多源断点合并 | ✓ |
+| 步长限制命中断点 | ✓ |
+| 断点后稳定期触发 | ✓ |
+| LTE Milne 估计 | ✓ |
+| LTE 差分估计 | ✓ |
+| PI 控制器增长/收缩 | ✓ |
+| PI 历史效应 | ✓ |
+| 紧急步长缩减 | ✓ |
+| 控制器统计 | ✓ |
+| 极端步长限制 | ✓ |
+
+**Phase 5 测试结果:** 31 个测试全部通过
+
+**总计测试:** Phase 1 (8) + Phase 2 (13) + Phase 3 (18) + Phase 4 (27) + Phase 5 (31) = **97 个测试全部通过**
 
 ---
 
