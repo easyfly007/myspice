@@ -4,6 +4,105 @@
 
 ---
 
+## 2026-02-03 - GUI Phase 1: Core Infrastructure
+
+### 已完成
+
+#### GUI 核心基础设施 (`tools/gui/`)
+
+实现 MySpice 图形用户界面的核心基础设施，使用 PySide6 (Qt for Python)。
+
+**功能特性：**
+
+1. **主窗口布局**
+   - 可停靠面板 (Dockable Panels)
+   - 菜单栏 (File, Edit, Simulate, View, Help)
+   - 工具栏 (New, Open, Save, Run)
+   - 状态栏 (服务器连接状态)
+
+2. **网表编辑器**
+   - 基础文本编辑
+   - 文件打开/保存
+   - 撤销/重做支持
+
+3. **仿真控制面板**
+   - OP/DC/TRAN/AC 分析标签页
+   - 参数输入控件
+   - 运行/停止按钮
+
+4. **结果面板**
+   - 工作点结果显示
+   - DC/TRAN/AC 结果摘要
+
+5. **控制台输出**
+   - 带时间戳的日志消息
+   - 彩色消息 (info/success/warning/error)
+   - 清空按钮
+
+6. **HTTP 客户端**
+   - 异步客户端 (httpx)
+   - 完整的 sim-api 接口封装
+   - 数据类型定义 (RunResult, WaveformData, etc.)
+
+**安装方式：**
+```bash
+cd tools/gui
+pip install -e .
+```
+
+**使用示例：**
+```bash
+# 启动 API 服务器
+cargo run -p sim-api -- --addr 127.0.0.1:3000
+
+# 启动 GUI
+myspice-gui
+
+# 指定服务器地址
+myspice-gui --server http://192.168.1.100:3000
+
+# 打开网表文件
+myspice-gui circuit.cir
+```
+
+**键盘快捷键：**
+
+| 快捷键 | 功能 |
+|--------|------|
+| Ctrl+N | 新建 |
+| Ctrl+O | 打开 |
+| Ctrl+S | 保存 |
+| F5 | 运行仿真 |
+| Ctrl+Z | 撤销 |
+
+**新增文件：**
+- `tools/gui/pyproject.toml` - 包配置
+- `tools/gui/README.md` - 使用文档
+- `tools/gui/myspice_gui/` - Python 包
+  - `__init__.py` - 包导出
+  - `__main__.py` - 入口点
+  - `client.py` - HTTP 客户端 (~280 行)
+  - `main_window.py` - 主窗口 (~570 行)
+  - `console/console.py` - 控制台组件 (~180 行)
+- `tools/gui/tests/` - 测试文件
+  - `test_client.py` - 客户端测试
+  - `test_console.py` - 控制台测试
+
+**依赖：**
+- PySide6 >= 6.6.0
+- pyqtgraph >= 0.13.0
+- httpx >= 0.27.0
+- numpy >= 1.24.0
+
+**后续计划：**
+- Phase 2: 语法高亮编辑器
+- Phase 3: 仿真控制优化
+- Phase 4: 波形查看器 (pyqtgraph)
+- Phase 5: 结果表格、Bode 图
+- Phase 6: 高级功能 (游标、FFT、主题)
+
+---
+
 ## 2026-02-02 - AI Agent 集成
 
 ### 已完成
