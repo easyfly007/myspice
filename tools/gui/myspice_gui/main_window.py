@@ -41,6 +41,7 @@ from PySide6.QtCore import Qt, QTimer, Slot
 
 from .client import MySpiceClient, RunResult, AnalysisType, AcSweepType, ClientError
 from .console import ConsoleWidget
+from .editor import NetlistEditor
 
 
 class SimulationWorker:
@@ -98,24 +99,6 @@ class SimulationWorker:
         ))
 
 
-class NetlistEditor(QPlainTextEdit):
-    """Simple netlist editor widget."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self.setFont(QFont("Consolas", 10))
-        self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.setTabStopDistance(40)
-        self.setPlaceholderText("Enter SPICE netlist here...")
-
-        # Default example
-        self.setPlainText("""* RC Low-pass Filter
-V1 in 0 DC 5 PULSE(0 5 0 1n 1n 5u 10u)
-R1 in out 1k
-C1 out 0 100n
-.tran 10n 50u
-.end
-""")
 
 
 class SimulationPanel(QWidget):
@@ -393,6 +376,13 @@ class MainWindow(QMainWindow):
 
         # Left panel: Editor
         self._editor = NetlistEditor()
+        self._editor.setPlainText("""* RC Low-pass Filter
+V1 in 0 DC 5 PULSE(0 5 0 1n 1n 5u 10u)
+R1 in out 1k
+C1 out 0 100n
+.tran 10n 50u
+.end
+""")
         splitter.addWidget(self._editor)
 
         # Right panel: Results/Waveform
@@ -546,13 +536,30 @@ class MainWindow(QMainWindow):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
 
-        # Server status indicator
+        # Cursor position indicator
+        self._position_label = QLabel("Line 1, Col 1")
+        self._statusbar.addWidget(self._position_label)
+
+        # Spacer
+        self._statusbar.addWidget(QLabel("  |  "))
+
+        # Mode indicator
+        self._mode_label = QLabel("SPICE")
+        self._statusbar.addWidget(self._mode_label)
+
+        # Server status indicator (right side)
         self._server_label = QLabel("Server: Checking...")
         self._statusbar.addPermanentWidget(self._server_label)
 
     def _setup_connections(self):
         """Set up signal connections."""
         self._editor.textChanged.connect(self._on_text_changed)
+        self._editor.cursor_position_changed.connect(self._on_cursor_position_changed)
+
+    @Slot(int, int)
+    def _on_cursor_position_changed(self, line: int, column: int):
+        """Handle cursor position changes."""
+        self._position_label.setText(f"Line {line}, Col {column}")
 
     def _check_server(self):
         """Check server connection and update status."""

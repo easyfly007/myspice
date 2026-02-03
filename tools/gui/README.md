@@ -4,7 +4,12 @@ Graphical user interface for MySpice circuit simulator, built with PySide6 (Qt f
 
 ## Features
 
-- **Netlist Editor**: Edit SPICE netlists with syntax support
+- **Netlist Editor**: Full-featured editor with:
+  - Syntax highlighting for SPICE keywords, devices, numbers
+  - Line numbers with current line highlighting
+  - Auto-completion for device types, commands, node names
+  - Smart indentation (Tab/Shift+Tab)
+  - Cursor position tracking
 - **Simulation Control**: Run OP, DC, TRAN, AC analyses
 - **Results Panel**: View operating point and analysis results
 - **Console Output**: Colored log messages with timestamps
@@ -102,6 +107,11 @@ myspice_gui/
 ├── __main__.py       # Entry point
 ├── main_window.py    # Main window and panels
 ├── client.py         # HTTP client for sim-api
+├── editor/           # Netlist editor components
+│   ├── __init__.py
+│   ├── editor.py     # Main editor with line numbers
+│   ├── highlighter.py # Syntax highlighting
+│   └── completer.py  # Auto-completion
 └── console/          # Console output widget
     ├── __init__.py
     └── console.py
@@ -125,11 +135,21 @@ ruff check myspice_gui/
 ## Roadmap
 
 - [x] **Phase 1**: Core infrastructure, main window, HTTP client, console
-- [ ] **Phase 2**: Netlist editor with syntax highlighting
+- [x] **Phase 2**: Netlist editor with syntax highlighting
 - [ ] **Phase 3**: Simulation control panel improvements
 - [ ] **Phase 4**: Waveform viewer with pyqtgraph
 - [ ] **Phase 5**: Results table, Bode plot, polish
 - [ ] **Phase 6**: Advanced features (cursors, FFT, themes)
+
+## Syntax Highlighting
+
+The editor highlights:
+- **Comments**: Gray italic (`* comment` or `; comment`)
+- **Control commands**: Blue bold (`.op`, `.dc`, `.tran`, `.model`, etc.)
+- **Device names**: Purple bold (`R1`, `C1`, `M1`, etc.)
+- **Numbers**: Dark cyan (`1k`, `100n`, `1.5e-6`, etc.)
+- **Waveforms**: Orange bold (`PULSE`, `PWL`, `SIN`, `EXP`)
+- **Parameters**: Dark green (`W=`, `L=`, etc.)
 
 ## License
 

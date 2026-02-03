@@ -4,6 +4,67 @@
 
 ---
 
+## 2026-02-03 - GUI Phase 2: Syntax Highlighting Editor
+
+### 已完成
+
+#### 语法高亮编辑器 (`tools/gui/myspice_gui/editor/`)
+
+实现完整的 SPICE 网表编辑器，支持语法高亮、行号显示和自动补全。
+
+**功能特性：**
+
+1. **语法高亮 (SpiceHighlighter)**
+   - 注释: 灰色斜体 (`* comment`, `; comment`)
+   - 控制命令: 蓝色粗体 (`.op`, `.dc`, `.tran`, `.model` 等)
+   - 器件名: 紫色粗体 (`R1`, `C1`, `M1` 等)
+   - 数字: 深青色 (`1k`, `100n`, `1.5e-6` 等)
+   - 波形关键字: 橙色粗体 (`PULSE`, `PWL`, `SIN`, `EXP`)
+   - 参数: 深绿色 (`W=`, `L=` 等)
+
+2. **行号显示 (LineNumberArea)**
+   - 自动计算宽度
+   - 随滚动同步
+   - 当前行高亮
+
+3. **自动补全 (SpiceCompleter)**
+   - 器件类型 (R, C, L, V, I, D, M, Q, J, E, G, F, H, X)
+   - 控制命令 (`.op`, `.dc`, `.tran`, `.ac`, `.model` 等)
+   - 波形类型 (PULSE, PWL, SIN, EXP)
+   - 动态节点名提取
+
+4. **编辑器增强**
+   - 当前行高亮 (浅黄色背景)
+   - 智能缩进 (Tab/Shift+Tab)
+   - 光标位置跟踪
+   - 状态栏显示行列号
+
+**新增文件：**
+- `tools/gui/myspice_gui/editor/__init__.py` - 模块导出
+- `tools/gui/myspice_gui/editor/editor.py` - 主编辑器组件 (~350 行)
+- `tools/gui/myspice_gui/editor/highlighter.py` - 语法高亮 (~180 行)
+- `tools/gui/myspice_gui/editor/completer.py` - 自动补全 (~220 行)
+- `tools/gui/tests/test_editor.py` - 编辑器测试 (~200 行)
+
+**语法高亮规则：**
+
+| 元素 | 颜色 | 示例 |
+|------|------|------|
+| 注释 | #6A737D (灰色) | `* This is a comment` |
+| 命令 | #0000CC (蓝色) | `.tran`, `.model` |
+| 器件 | #8B008B (紫色) | `R1`, `M1`, `X1` |
+| 数字 | #008B8B (青色) | `1k`, `100n`, `1e-6` |
+| 波形 | #D2691E (橙色) | `PULSE`, `PWL`, `SIN` |
+| 参数 | #006400 (绿色) | `W=`, `L=`, `R=` |
+
+**测试用例：** 20+ 个单元测试
+- 语法高亮测试
+- 自动补全测试
+- 编辑器功能测试
+- 光标位置测试
+
+---
+
 ## 2026-02-03 - GUI Phase 1: Core Infrastructure
 
 ### 已完成
