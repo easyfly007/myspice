@@ -580,7 +580,7 @@ for iter in 1..max_newton {
 
 - [x] Native Rust sparse LU solver (SparseLU) - no external dependencies
 - [x] BTF (Block Triangular Form) decomposition for SparseLU
-- [ ] Full AMD algorithm with mass elimination for SparseLU
+- [x] Full AMD algorithm with quotient graph for SparseLU (see [AMD Algorithm](amd_algorithm.md))
 - [ ] Iterative solvers (GMRES, BiCGSTAB) for very large circuits
 - [ ] GPU-accelerated solvers (cuSPARSE)
 - [ ] Parallel direct solvers (PARDISO, SuperLU_MT)

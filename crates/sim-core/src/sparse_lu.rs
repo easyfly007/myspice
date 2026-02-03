@@ -111,6 +111,7 @@
 //! - Amestoy, P.R., Davis, T.A., Duff, I.S. "An Approximate Minimum Degree Ordering
 //!   Algorithm", SIAM J. Matrix Anal. Appl., 1996
 
+use crate::amd::amd_order;
 use crate::solver::{LinearSolver, SolverError};
 
 /// Pivot tolerance for detecting near-zero pivots
@@ -245,104 +246,38 @@ impl SparseLuSolver {
 
     /// Compute fill-reducing ordering using Approximate Minimum Degree (AMD)
     ///
+    /// This uses the full AMD algorithm from the `amd` module, which includes:
+    /// - Quotient graph representation for efficient elimination
+    /// - Approximate degree bounds for fast updates
+    /// - Mass elimination of minimum-degree nodes
+    /// - Element absorption to reduce graph size
+    /// - Supervariable detection and merging
+    ///
     /// # Algorithm
     ///
-    /// AMD simulates Gaussian elimination and always eliminates the node with
-    /// minimum degree (fewest remaining connections). This produces an ordering
-    /// that typically results in low fill-in during factorization.
+    /// AMD simulates Gaussian elimination using a quotient graph and always
+    /// eliminates nodes with minimum approximate degree. This produces an
+    /// ordering that typically results in low fill-in during factorization.
     ///
-    /// ## Steps:
-    /// 1. Build symmetric adjacency graph from A + A^T
-    /// 2. Initialize degree[i] = number of neighbors
-    /// 3. Repeat n times:
-    ///    - Find node p with minimum degree among uneliminated nodes
-    ///    - Add p to permutation
-    ///    - Update degrees: eliminating p connects all its neighbors
+    /// # Complexity
     ///
-    /// ## Complexity:
-    /// O(n²) worst case, but typically O(n · avg_degree) for sparse graphs.
+    /// O(n·m) where m is the number of nonzeros after fill-in.
+    /// For typical circuit matrices, this is nearly O(n·log(n)).
+    ///
+    /// # References
+    ///
+    /// - Amestoy, P.R., Davis, T.A., Duff, I.S. "An Approximate Minimum Degree
+    ///   Ordering Algorithm", SIAM J. Matrix Anal. Appl., 1996
+    /// - Amestoy, P.R., Davis, T.A., Duff, I.S. "Algorithm 837: AMD", ACM TOMS, 2004
     fn compute_amd_ordering(&mut self, ap: &[i64], ai: &[i64]) {
         let n = self.n;
 
-        // Build symmetric adjacency structure
-        // adj[i] contains all nodes j where A(i,j) ≠ 0 or A(j,i) ≠ 0
-        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-        for col in 0..n {
-            let start = ap[col] as usize;
-            let end = ap[col + 1] as usize;
-            for idx in start..end {
-                let row = ai[idx] as usize;
-                if row < n && row != col {
-                    // Add both directions for symmetric graph
-                    if !adj[col].contains(&row) {
-                        adj[col].push(row);
-                    }
-                    if !adj[row].contains(&col) {
-                        adj[row].push(col);
-                    }
-                }
-            }
-        }
+        // Use the full AMD algorithm from the amd module
+        let result = amd_order(n, ap, ai);
 
-        // Initialize degrees
-        let mut degree: Vec<usize> = adj.iter().map(|a| a.len()).collect();
-
-        // Track which nodes have been eliminated
-        let mut eliminated = vec![false; n];
-
-        // Build permutation
-        self.perm.resize(n, 0);
-        self.inv_perm.resize(n, 0);
-
-        for perm_idx in 0..n {
-            // Find uneliminated node with minimum degree
-            let mut min_degree = usize::MAX;
-            let mut min_node = 0;
-            for i in 0..n {
-                if !eliminated[i] && degree[i] < min_degree {
-                    min_degree = degree[i];
-                    min_node = i;
-                }
-            }
-
-            // Add to permutation
-            self.perm[min_node] = perm_idx;
-            self.inv_perm[perm_idx] = min_node;
-            eliminated[min_node] = true;
-
-            // Update degrees of neighbors
-            // When we eliminate min_node, all its uneliminated neighbors
-            // become connected to each other (clique formation)
-            let neighbors: Vec<usize> = adj[min_node]
-                .iter()
-                .filter(|&&node| !eliminated[node])
-                .copied()
-                .collect();
-
-            // For each pair of uneliminated neighbors, check if they need to be connected
-            for i in 0..neighbors.len() {
-                let ni = neighbors[i];
-                // Remove min_node from ni's adjacency
-                if let Some(pos) = adj[ni].iter().position(|&x| x == min_node) {
-                    adj[ni].swap_remove(pos);
-                    if degree[ni] > 0 {
-                        degree[ni] -= 1;
-                    }
-                }
-
-                // Add edges to other neighbors (clique)
-                for &nj in neighbors.iter().skip(i + 1) {
-                    if !adj[ni].contains(&nj) {
-                        adj[ni].push(nj);
-                        degree[ni] += 1;
-                    }
-                    if !adj[nj].contains(&ni) {
-                        adj[nj].push(ni);
-                        degree[nj] += 1;
-                    }
-                }
-            }
-        }
+        // Copy permutation vectors
+        self.perm = result.perm;
+        self.inv_perm = result.inv_perm;
     }
 
     /// Perform symbolic factorization to determine fill-in pattern
