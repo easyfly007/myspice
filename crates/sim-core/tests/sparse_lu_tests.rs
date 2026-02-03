@@ -524,6 +524,30 @@ fn test_create_solver_sparse_lu() {
 }
 
 #[test]
+fn test_create_solver_sparse_lu_btf() {
+    let solver = create_solver(SolverType::SparseLuBtf, 10);
+    // Name depends on whether BTF is used (based on matrix structure)
+    assert!(solver.name() == "SparseLU" || solver.name() == "SparseLU-BTF");
+}
+
+#[test]
+fn test_sparse_lu_btf_via_solver_trait() {
+    let ap = vec![0i64, 2, 4];
+    let ai = vec![0i64, 1, 0, 1];
+    let ax = vec![3.0, 1.0, 1.0, 2.0];
+    let mut rhs = vec![9.0, 8.0];
+
+    let mut solver = create_solver(SolverType::SparseLuBtf, 2);
+    solver.prepare(2);
+    solver.analyze(&ap, &ai).unwrap();
+    solver.factor(&ap, &ai, &ax).unwrap();
+    solver.solve(&mut rhs).unwrap();
+
+    assert!((rhs[0] - 2.0).abs() < 1e-9);
+    assert!((rhs[1] - 3.0).abs() < 1e-9);
+}
+
+#[test]
 fn test_sparse_lu_via_solver_trait() {
     let ap = vec![0i64, 2, 4];
     let ai = vec![0i64, 1, 0, 1];

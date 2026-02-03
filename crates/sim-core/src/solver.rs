@@ -7,6 +7,7 @@
 //! |--------|---------|-------------|--------------|
 //! | Dense  | (always) | O(n³) | None |
 //! | SparseLU | (always) | O(nnz·fill) | None (native Rust) |
+//! | SparseLU-BTF | (always) | O(nnz·fill), block-optimized | None (native Rust) |
 //! | Faer   | `faer-solver` (default) | O(nnz·fill) | Pure Rust |
 //! | KLU    | `klu` | O(nnz·fill), fastest | SuiteSparse (C) |
 //!
@@ -122,6 +123,8 @@ pub enum SolverType {
     Dense,
     /// Native Rust sparse LU solver - O(nnz·fill), no dependencies
     SparseLu,
+    /// Native Rust sparse LU solver with BTF decomposition - best for block-structured matrices
+    SparseLuBtf,
     /// Faer sparse solver - Pure Rust, O(nnz·fill)
     Faer,
     /// KLU sparse solver - SuiteSparse C library, fastest
@@ -157,6 +160,7 @@ pub fn create_solver(solver_type: SolverType, n: usize) -> Box<dyn LinearSolver>
     match solver_type {
         SolverType::Dense => Box::new(DenseSolver::new(n)),
         SolverType::SparseLu => Box::new(crate::sparse_lu::SparseLuSolver::new(n)),
+        SolverType::SparseLuBtf => Box::new(crate::sparse_lu_btf::SparseLuBtfSolver::new(n)),
         SolverType::Faer => {
             #[cfg(feature = "faer-solver")]
             {

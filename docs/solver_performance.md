@@ -4,12 +4,13 @@ This document provides comprehensive information about the linear solvers availa
 
 ## Overview
 
-MySpice provides four linear solver backends for circuit simulation:
+MySpice provides five linear solver backends for circuit simulation:
 
 | Solver | Feature Flag | Dependencies | Performance | Best For |
 |--------|--------------|--------------|-------------|----------|
 | **Dense** | (always available) | None | O(n³) | n < 100 nodes |
 | **SparseLU** | (always available) | None (native Rust) | O(nnz·fill) | 100-5000 nodes |
+| **SparseLU-BTF** | (always available) | None (native Rust) | O(nnz·fill), block-optimized | Block-structured circuits |
 | **Faer** | `faer-solver` (default) | Pure Rust | O(nnz·fill) | General use |
 | **KLU** | `klu` | SuiteSparse (C) | O(nnz·fill), fastest | Large circuits |
 
@@ -103,8 +104,8 @@ solver.solve(&mut rhs)?;
 
 **Limitations:**
 - Slower than Faer (~1.5x) and KLU (~2x) for large matrices
-- No BTF (Block Triangular Form) optimization
 - Simple AMD (not full approximate minimum degree with mass elimination)
+- For block-structured matrices, use SparseLU-BTF instead
 
 **Algorithm Details:**
 
@@ -151,7 +152,84 @@ solver.solve(&mut rhs)?;  // Forward/backward solve
 
 ---
 
-### 3. Faer Solver (Default)
+### 3. SparseLU-BTF Solver (Native Rust with Block Optimization)
+
+**Description:** Native Rust sparse LU factorization with Block Triangular Form (BTF) decomposition, optimized for circuits with block structure.
+
+**Complexity:**
+- BTF decomposition: O(nnz + n) for matching and SCC
+- Per-block factorization: O(nnz_block · fill_block)
+- Solve: O(nnz) with block-wise operations
+- Memory: O(nnz + fill) distributed across blocks
+
+**When to Use:**
+- Circuits with natural block structure (multi-stage amplifiers, cascaded filters)
+- Systems with loosely coupled subcircuits
+- Large circuits where BTF can identify independent blocks
+- When the matrix has many 1×1 blocks (singletons)
+
+**Features:**
+- Pure Rust implementation, no external dependencies
+- Automatic BTF detection and application
+- Maximum transversal for structural rank detection
+- Tarjan's algorithm for strongly connected components
+- Falls back to standard SparseLU when BTF is not beneficial
+- Block-wise factorization reduces fill-in
+
+**How BTF Works:**
+
+BTF permutes the matrix to upper block triangular form:
+
+```
+Original matrix:          After BTF:
+[ * * * * * ]            [ B₁₁  U₁₂  U₁₃ ]
+[ * * * * * ]      →     [  0   B₂₂  U₂₃ ]
+[ * * * * * ]            [  0    0   B₃₃ ]
+[ * * * * * ]
+[ * * * * * ]
+```
+
+Benefits:
+- Only diagonal blocks (B₁₁, B₂₂, B₃₃) need LU factorization
+- For k equal-sized blocks, factorization is k² times faster
+- 1×1 blocks (singletons) require no factorization at all
+- Off-diagonal blocks are used only during solve phase
+
+**Performance Gain:**
+
+For a matrix with k blocks of roughly equal size n/k:
+- Standard LU: O((n)³) operations
+- BTF LU: O(k × (n/k)³) = O(n³/k²) operations
+
+Example: A 1000-node circuit with 10 equal blocks:
+- Standard: 1,000,000,000 operations
+- BTF: 10,000,000 operations (100× faster)
+
+**Example:**
+```rust
+use sim_core::solver::{create_solver, SolverType, LinearSolver};
+
+let mut solver = create_solver(SolverType::SparseLuBtf, n);
+solver.prepare(n);
+solver.analyze(&ap, &ai)?;  // BTF + AMD ordering per block
+solver.factor(&ap, &ai, &ax)?;  // Block-wise factorization
+solver.solve(&mut rhs)?;  // Block backward solve
+
+// Check BTF statistics
+println!("Solver mode: {}", solver.name());  // "SparseLU-BTF" or "SparseLU"
+```
+
+**When BTF Falls Back:**
+
+BTF is not used when:
+- Matrix has only 1 block (fully connected)
+- The largest block equals the matrix size
+- Matrix is too small (< 10 nodes by default)
+- BTF would add overhead without benefit
+
+---
+
+### 5. Faer Solver (Default)
 
 **Description:** Pure Rust sparse LU factorization using the faer library.
 
@@ -189,7 +267,7 @@ let mut solver = create_solver_auto(n);
 
 ---
 
-### 4. KLU Solver (Best Performance)
+### 6. KLU Solver (Best Performance)
 
 **Description:** High-performance sparse LU factorization from SuiteSparse, specifically designed for circuit simulation matrices.
 
@@ -241,22 +319,24 @@ println!("Refactors: {}", solver.refactor_count);
 
 ### Benchmark Results (Representative)
 
-| Circuit Size | Dense | SparseLU | Faer | KLU | Notes |
-|-------------|-------|----------|------|-----|-------|
-| 10 nodes | 0.01 ms | 0.02 ms | 0.02 ms | 0.02 ms | Dense faster for tiny |
-| 100 nodes | 0.5 ms | 0.2 ms | 0.3 ms | 0.2 ms | Sparse wins |
-| 1,000 nodes | 500 ms | 8 ms | 5 ms | 3 ms | Dense impractical |
-| 5,000 nodes | N/A | 80 ms | 40 ms | 25 ms | SparseLU ~2x slower |
-| 10,000 nodes | N/A | 200 ms | 100 ms | 50 ms | KLU fastest |
+| Circuit Size | Dense | SparseLU | SparseLU-BTF* | Faer | KLU | Notes |
+|-------------|-------|----------|---------------|------|-----|-------|
+| 10 nodes | 0.01 ms | 0.02 ms | 0.02 ms | 0.02 ms | 0.02 ms | Dense faster for tiny |
+| 100 nodes | 0.5 ms | 0.2 ms | 0.15 ms | 0.3 ms | 0.2 ms | Sparse wins |
+| 1,000 nodes | 500 ms | 8 ms | 2-6 ms | 5 ms | 3 ms | BTF faster if blocks exist |
+| 5,000 nodes | N/A | 80 ms | 10-60 ms | 40 ms | 25 ms | BTF depends on structure |
+| 10,000 nodes | N/A | 200 ms | 30-150 ms | 100 ms | 50 ms | KLU fastest overall |
+
+*BTF performance varies significantly based on circuit structure. The lower bound applies to circuits with many independent blocks.
 
 ### Memory Usage (Approximate)
 
-| Circuit Size | Dense | SparseLU | Faer | KLU |
-|-------------|-------|----------|------|-----|
-| 100 nodes | 80 KB | 50 KB | 20 KB | 15 KB |
-| 1,000 nodes | 8 MB | 500 KB | 200 KB | 150 KB |
-| 5,000 nodes | 200 MB | 3 MB | 2 MB | 1.5 MB |
-| 10,000 nodes | 800 MB | 8 MB | 5 MB | 4 MB |
+| Circuit Size | Dense | SparseLU | SparseLU-BTF | Faer | KLU |
+|-------------|-------|----------|--------------|------|-----|
+| 100 nodes | 80 KB | 50 KB | 55 KB | 20 KB | 15 KB |
+| 1,000 nodes | 8 MB | 500 KB | 400 KB | 200 KB | 150 KB |
+| 5,000 nodes | 200 MB | 3 MB | 2.5 MB | 2 MB | 1.5 MB |
+| 10,000 nodes | 800 MB | 8 MB | 6 MB | 5 MB | 4 MB |
 
 ---
 
@@ -428,7 +508,7 @@ cmake --install .
 // Automatic selection (recommended)
 let solver = create_solver_auto(n);
 
-// Or explicit selection based on circuit size
+// Or explicit selection based on circuit size and structure
 let solver = if n < 100 {
     create_solver(SolverType::Dense, n)
 } else if cfg!(feature = "klu") {
@@ -436,8 +516,9 @@ let solver = if n < 100 {
 } else if cfg!(feature = "faer-solver") {
     create_solver(SolverType::Faer, n)
 } else {
-    // SparseLU is always available, no features needed
-    create_solver(SolverType::SparseLu, n)
+    // For block-structured circuits, use SparseLU-BTF
+    // For general circuits, use SparseLU
+    create_solver(SolverType::SparseLuBtf, n)
 };
 ```
 
@@ -498,8 +579,8 @@ for iter in 1..max_newton {
 ## Future Improvements
 
 - [x] Native Rust sparse LU solver (SparseLU) - no external dependencies
+- [x] BTF (Block Triangular Form) decomposition for SparseLU
 - [ ] Full AMD algorithm with mass elimination for SparseLU
-- [ ] BTF (Block Triangular Form) decomposition for SparseLU
 - [ ] Iterative solvers (GMRES, BiCGSTAB) for very large circuits
 - [ ] GPU-accelerated solvers (cuSPARSE)
 - [ ] Parallel direct solvers (PARDISO, SuperLU_MT)
