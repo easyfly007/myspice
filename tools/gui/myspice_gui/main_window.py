@@ -9,7 +9,6 @@ Provides the main window with dockable panels for:
 - Console output
 """
 
-import asyncio
 import cmath
 from pathlib import Path
 from typing import Optional
@@ -48,214 +47,8 @@ from .console import ConsoleWidget
 from .editor import NetlistEditor
 from .viewer import WaveformViewer, BodePlot, SignalListWidget, CursorManager
 from .viewer.cursors import CursorControlPanel
-
-
-class SimulationWorker:
-    """
-    Handles running simulations asynchronously.
-
-    Uses asyncio to run simulations without blocking the UI.
-    """
-
-    def __init__(self, client: MySpiceClient):
-        self.client = client
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-
-    def _get_loop(self) -> asyncio.AbstractEventLoop:
-        """Get or create event loop."""
-        if self._loop is None or self._loop.is_closed():
-            try:
-                self._loop = asyncio.get_event_loop()
-            except RuntimeError:
-                self._loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(self._loop)
-        return self._loop
-
-    def run_sync(self, coro):
-        """Run a coroutine synchronously."""
-        loop = self._get_loop()
-        return loop.run_until_complete(coro)
-
-    def check_connection(self) -> bool:
-        """Check server connection."""
-        return self.run_sync(self.client.check_connection())
-
-    def run_op(self, netlist: str) -> RunResult:
-        """Run operating point analysis."""
-        return self.run_sync(self.client.run_op(netlist=netlist))
-
-    def run_dc(self, netlist: str, source: str, start: float, stop: float, step: float) -> RunResult:
-        """Run DC sweep analysis."""
-        return self.run_sync(self.client.run_dc(
-            netlist=netlist, source=source, start=start, stop=stop, step=step
-        ))
-
-    def run_tran(self, netlist: str, tstep: float, tstop: float,
-                 tstart: float = 0.0, tmax: Optional[float] = None) -> RunResult:
-        """Run transient analysis."""
-        return self.run_sync(self.client.run_tran(
-            netlist=netlist, tstep=tstep, tstop=tstop, tstart=tstart, tmax=tmax
-        ))
-
-    def run_ac(self, netlist: str, sweep: AcSweepType, points: int,
-               fstart: float, fstop: float) -> RunResult:
-        """Run AC analysis."""
-        return self.run_sync(self.client.run_ac(
-            netlist=netlist, sweep=sweep, points=points, fstart=fstart, fstop=fstop
-        ))
-
-
-
-
-class SimulationPanel(QWidget):
-    """Panel for simulation controls."""
-
-    def __init__(self, parent: Optional[QWidget] = None):
-        super().__init__(parent)
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
-
-        # Analysis type tabs
-        self._tabs = QTabWidget()
-        self._tabs.addTab(self._create_op_panel(), "OP")
-        self._tabs.addTab(self._create_dc_panel(), "DC")
-        self._tabs.addTab(self._create_tran_panel(), "TRAN")
-        self._tabs.addTab(self._create_ac_panel(), "AC")
-        layout.addWidget(self._tabs)
-
-        layout.addStretch()
-
-    def _create_op_panel(self) -> QWidget:
-        """Create operating point panel."""
-        widget = QWidget()
-        layout = QVBoxLayout(widget)
-        layout.addWidget(QLabel("Operating Point Analysis"))
-        layout.addWidget(QLabel("No additional parameters required."))
-        layout.addStretch()
-        return widget
-
-    def _create_dc_panel(self) -> QWidget:
-        """Create DC sweep panel."""
-        widget = QWidget()
-        layout = QFormLayout(widget)
-
-        self._dc_source = QComboBox()
-        self._dc_source.setEditable(True)
-        self._dc_source.addItems(["V1", "V2", "I1"])
-        layout.addRow("Source:", self._dc_source)
-
-        self._dc_start = QDoubleSpinBox()
-        self._dc_start.setRange(-1e9, 1e9)
-        self._dc_start.setDecimals(6)
-        self._dc_start.setValue(0.0)
-        layout.addRow("Start:", self._dc_start)
-
-        self._dc_stop = QDoubleSpinBox()
-        self._dc_stop.setRange(-1e9, 1e9)
-        self._dc_stop.setDecimals(6)
-        self._dc_stop.setValue(5.0)
-        layout.addRow("Stop:", self._dc_stop)
-
-        self._dc_step = QDoubleSpinBox()
-        self._dc_step.setRange(1e-15, 1e9)
-        self._dc_step.setDecimals(6)
-        self._dc_step.setValue(0.1)
-        layout.addRow("Step:", self._dc_step)
-
-        return widget
-
-    def _create_tran_panel(self) -> QWidget:
-        """Create transient panel."""
-        widget = QWidget()
-        layout = QFormLayout(widget)
-
-        self._tran_tstep = QDoubleSpinBox()
-        self._tran_tstep.setRange(1e-18, 1e3)
-        self._tran_tstep.setDecimals(12)
-        self._tran_tstep.setValue(1e-9)
-        self._tran_tstep.setPrefix("tstep: ")
-        self._tran_tstep.setSuffix(" s")
-        layout.addRow("Time Step:", self._tran_tstep)
-
-        self._tran_tstop = QDoubleSpinBox()
-        self._tran_tstop.setRange(1e-18, 1e6)
-        self._tran_tstop.setDecimals(12)
-        self._tran_tstop.setValue(1e-3)
-        self._tran_tstop.setSuffix(" s")
-        layout.addRow("Stop Time:", self._tran_tstop)
-
-        self._tran_tstart = QDoubleSpinBox()
-        self._tran_tstart.setRange(0, 1e6)
-        self._tran_tstart.setDecimals(12)
-        self._tran_tstart.setValue(0.0)
-        self._tran_tstart.setSuffix(" s")
-        layout.addRow("Start Time:", self._tran_tstart)
-
-        return widget
-
-    def _create_ac_panel(self) -> QWidget:
-        """Create AC analysis panel."""
-        widget = QWidget()
-        layout = QFormLayout(widget)
-
-        self._ac_sweep = QComboBox()
-        self._ac_sweep.addItems(["DEC", "OCT", "LIN"])
-        layout.addRow("Sweep Type:", self._ac_sweep)
-
-        self._ac_points = QSpinBox()
-        self._ac_points.setRange(1, 10000)
-        self._ac_points.setValue(10)
-        layout.addRow("Points:", self._ac_points)
-
-        self._ac_fstart = QDoubleSpinBox()
-        self._ac_fstart.setRange(1e-6, 1e15)
-        self._ac_fstart.setDecimals(3)
-        self._ac_fstart.setValue(1.0)
-        self._ac_fstart.setSuffix(" Hz")
-        layout.addRow("Start Freq:", self._ac_fstart)
-
-        self._ac_fstop = QDoubleSpinBox()
-        self._ac_fstop.setRange(1e-6, 1e15)
-        self._ac_fstop.setDecimals(3)
-        self._ac_fstop.setValue(1e6)
-        self._ac_fstop.setSuffix(" Hz")
-        layout.addRow("Stop Freq:", self._ac_fstop)
-
-        return widget
-
-    def get_analysis_type(self) -> str:
-        """Get selected analysis type."""
-        return ["op", "dc", "tran", "ac"][self._tabs.currentIndex()]
-
-    def get_dc_params(self) -> dict:
-        """Get DC sweep parameters."""
-        return {
-            "source": self._dc_source.currentText(),
-            "start": self._dc_start.value(),
-            "stop": self._dc_stop.value(),
-            "step": self._dc_step.value(),
-        }
-
-    def get_tran_params(self) -> dict:
-        """Get transient parameters."""
-        return {
-            "tstep": self._tran_tstep.value(),
-            "tstop": self._tran_tstop.value(),
-            "tstart": self._tran_tstart.value(),
-        }
-
-    def get_ac_params(self) -> dict:
-        """Get AC analysis parameters."""
-        sweep_map = {"DEC": AcSweepType.DEC, "OCT": AcSweepType.OCT, "LIN": AcSweepType.LIN}
-        return {
-            "sweep": sweep_map[self._ac_sweep.currentText()],
-            "points": self._ac_points.value(),
-            "fstart": self._ac_fstart.value(),
-            "fstop": self._ac_fstop.value(),
-        }
+from .simulation import SimulationPanel, SimulationWorker, SimulationTask
+from .simulation.worker import AnalysisType as SimAnalysisType, ConnectionChecker
 
 
 class ResultsPanel(QWidget):
@@ -482,7 +275,8 @@ class MainWindow(QMainWindow):
 
         self._server_url = server_url
         self._client = MySpiceClient(server_url)
-        self._worker = SimulationWorker(self._client)
+        self._worker: Optional[SimulationWorker] = None
+        self._connection_checker: Optional[ConnectionChecker] = None
         self._current_file: Optional[Path] = None
         self._modified = False
 
@@ -492,7 +286,7 @@ class MainWindow(QMainWindow):
         self._setup_statusbar()
         self._setup_connections()
 
-        # Check server connection
+        # Check server connection (non-blocking)
         QTimer.singleShot(100, self._check_server)
 
     def _setup_ui(self):
@@ -743,6 +537,10 @@ C1 out 0 100n
         waveform = self._viewer_panel.get_waveform_viewer()
         waveform.cursor_moved.connect(self._on_waveform_cursor_moved)
 
+        # Simulation panel connections
+        self._sim_panel.run_requested.connect(self._on_simulation_requested)
+        self._sim_panel.stop_requested.connect(self._on_simulation_stop_requested)
+
     @Slot(str, bool)
     def _on_signal_visibility_changed(self, name: str, visible: bool):
         """Handle signal visibility change."""
@@ -777,21 +575,28 @@ C1 out 0 100n
         self._position_label.setText(f"Line {line}, Col {column}")
 
     def _check_server(self):
-        """Check server connection and update status."""
-        try:
-            connected = self._worker.check_connection()
-            if connected:
-                self._server_label.setText(f"Server: Connected ({self._server_url})")
-                self._server_label.setStyleSheet("color: green;")
-                self._console.success(f"Connected to server at {self._server_url}")
-            else:
-                self._server_label.setText("Server: Disconnected")
-                self._server_label.setStyleSheet("color: red;")
-                self._console.error(f"Cannot connect to server at {self._server_url}")
-        except Exception as e:
-            self._server_label.setText("Server: Error")
+        """Check server connection and update status (non-blocking)."""
+        self._server_label.setText("Server: Checking...")
+        self._server_label.setStyleSheet("color: gray;")
+
+        # Use ConnectionChecker for non-blocking check
+        self._connection_checker = ConnectionChecker(self._client, self)
+        self._connection_checker.result.connect(self._on_connection_check_result)
+        self._connection_checker.start()
+
+    @Slot(bool)
+    def _on_connection_check_result(self, connected: bool):
+        """Handle connection check result."""
+        if connected:
+            self._server_label.setText(f"Server: Connected ({self._server_url})")
+            self._server_label.setStyleSheet("color: green;")
+            self._sim_panel.set_server_status(True, self._server_url)
+            self._console.success(f"Connected to server at {self._server_url}")
+        else:
+            self._server_label.setText("Server: Disconnected")
             self._server_label.setStyleSheet("color: red;")
-            self._console.error(f"Server error: {e}")
+            self._sim_panel.set_server_status(False)
+            self._console.error(f"Cannot connect to server at {self._server_url}")
 
     def _on_text_changed(self):
         """Handle editor text changes."""
@@ -887,61 +692,165 @@ C1 out 0 100n
 
     @Slot()
     def _on_run(self):
-        """Run selected analysis."""
+        """Run selected analysis from menu/toolbar."""
         analysis = self._sim_panel.get_analysis_type()
-        self._run_analysis(analysis)
+        params = self._sim_panel.get_params()
+        self._start_simulation(analysis, params)
 
-    def _run_analysis(self, analysis: str):
-        """Run specific analysis type."""
+    @Slot(str, dict)
+    def _on_simulation_requested(self, analysis: str, params: dict):
+        """Handle simulation request from panel."""
+        self._start_simulation(analysis, params)
+
+    @Slot()
+    def _on_simulation_stop_requested(self):
+        """Handle stop request from panel."""
+        if self._worker and self._worker.isRunning():
+            self._worker.request_stop()
+            self._console.warning("Stop requested...")
+
+    def _start_simulation(self, analysis: str, params: dict):
+        """Start a simulation in background thread."""
         netlist = self._editor.toPlainText()
         if not netlist.strip():
             self._console.warning("No netlist to simulate")
+            self._sim_panel.set_status("No netlist to simulate", is_error=True)
             return
 
+        # Validate parameters
+        errors = self._sim_panel.validate()
+        if errors:
+            self._console.error(f"Validation error: {errors[0]}")
+            self._sim_panel.set_status(errors[0], is_error=True)
+            return
+
+        # Map analysis string to enum
+        analysis_map = {
+            "op": SimAnalysisType.OP,
+            "dc": SimAnalysisType.DC,
+            "tran": SimAnalysisType.TRAN,
+            "ac": SimAnalysisType.AC,
+        }
+        analysis_enum = analysis_map.get(analysis)
+        if not analysis_enum:
+            self._console.error(f"Unknown analysis type: {analysis}")
+            return
+
+        # Create simulation task
+        task = SimulationTask(
+            analysis=analysis_enum,
+            netlist=netlist,
+            params=params
+        )
+
+        # Create worker and connect signals
+        self._worker = SimulationWorker(self._client, self)
+        self._worker.simulation_started.connect(self._on_simulation_started)
+        self._worker.progress.connect(self._on_simulation_progress)
+        self._worker.finished.connect(self._on_simulation_finished)
+        self._worker.error.connect(self._on_simulation_error)
+        self._worker.stopped.connect(self._on_simulation_stopped)
+
+        # Set task and start
+        self._worker.set_task(task)
+        self._worker.start()
+
+        # Update UI state
+        self._sim_panel.set_running(True)
+        self._run_action.setEnabled(False)
         self._console.info(f"Running {analysis.upper()} analysis...")
         self._statusbar.showMessage(f"Running {analysis.upper()}...", 0)
 
-        try:
-            if analysis == "op":
-                result = self._worker.run_op(netlist)
-                self._results.show_op_results(result)
-            elif analysis == "dc":
-                params = self._sim_panel.get_dc_params()
-                result = self._worker.run_dc(netlist, **params)
-                self._results.show_dc_results(result)
-                self._plot_dc_results(result)
-            elif analysis == "tran":
-                params = self._sim_panel.get_tran_params()
-                result = self._worker.run_tran(netlist, **params)
-                self._results.show_tran_results(result)
-                self._plot_tran_results(result)
-            elif analysis == "ac":
-                params = self._sim_panel.get_ac_params()
-                result = self._worker.run_ac(netlist, **params)
-                self._results.show_ac_results(result)
-                self._plot_ac_results(result)
-            else:
-                self._console.error(f"Unknown analysis type: {analysis}")
-                return
+    @Slot(str)
+    def _on_simulation_started(self, analysis: str):
+        """Handle simulation start."""
+        self._sim_panel.set_progress(f"Running {analysis} analysis...")
 
-            if result.status == "Success":
-                self._console.success(f"{analysis.upper()} analysis completed successfully")
-                if result.message:
-                    self._console.info(result.message)
-            else:
-                self._console.error(f"{analysis.upper()} analysis failed: {result.message}")
+    @Slot(str)
+    def _on_simulation_progress(self, message: str):
+        """Handle simulation progress update."""
+        self._sim_panel.set_progress(message)
 
-            self._statusbar.showMessage(f"{analysis.upper()} completed", 5000)
+    @Slot(object)
+    def _on_simulation_finished(self, result: RunResult):
+        """Handle simulation completion."""
+        # Reset UI state
+        self._sim_panel.set_running(False)
+        self._run_action.setEnabled(True)
 
-        except ClientError as e:
-            self._console.error(f"Simulation error: {e}")
-            if e.details:
-                for detail in e.details:
-                    self._console.error(f"  - {detail}")
-            self._statusbar.showMessage("Simulation failed", 5000)
-        except Exception as e:
-            self._console.error(f"Error: {e}")
-            self._statusbar.showMessage("Error occurred", 5000)
+        analysis = result.analysis.value if hasattr(result.analysis, 'value') else str(result.analysis)
+
+        # Display results based on analysis type
+        if result.analysis == AnalysisType.OP:
+            self._results.show_op_results(result)
+        elif result.analysis == AnalysisType.DC:
+            self._results.show_dc_results(result)
+            self._plot_dc_results(result)
+        elif result.analysis == AnalysisType.TRAN:
+            self._results.show_tran_results(result)
+            self._plot_tran_results(result)
+        elif result.analysis == AnalysisType.AC:
+            self._results.show_ac_results(result)
+            self._plot_ac_results(result)
+
+        # Update status
+        if result.status == "Success":
+            self._console.success(f"{analysis} analysis completed successfully")
+            self._sim_panel.set_success(f"{analysis} completed")
+            if result.message:
+                self._console.info(result.message)
+        else:
+            self._console.error(f"{analysis} analysis: {result.message}")
+            self._sim_panel.set_status(result.message or "Failed", is_error=True)
+
+        self._statusbar.showMessage(f"{analysis} completed", 5000)
+
+    @Slot(str, list)
+    def _on_simulation_error(self, message: str, details: list):
+        """Handle simulation error."""
+        # Reset UI state
+        self._sim_panel.set_running(False)
+        self._run_action.setEnabled(True)
+
+        self._console.error(f"Simulation error: {message}")
+        for detail in details:
+            self._console.error(f"  - {detail}")
+
+        self._sim_panel.set_status(message, is_error=True)
+        self._statusbar.showMessage("Simulation failed", 5000)
+
+    @Slot()
+    def _on_simulation_stopped(self):
+        """Handle simulation stopped by user."""
+        # Reset UI state
+        self._sim_panel.set_running(False)
+        self._run_action.setEnabled(True)
+
+        self._console.warning("Simulation stopped by user")
+        self._sim_panel.set_status("Stopped")
+        self._statusbar.showMessage("Simulation stopped", 5000)
+
+    def _run_analysis(self, analysis: str):
+        """Run specific analysis type (for menu actions)."""
+        # Get params based on analysis type
+        if analysis == "op":
+            params = {}
+        elif analysis == "dc":
+            params = self._sim_panel.get_params() if self._sim_panel.get_analysis_type() == "dc" else {
+                "source": "V1", "start": 0.0, "stop": 5.0, "step": 0.1
+            }
+        elif analysis == "tran":
+            params = self._sim_panel.get_params() if self._sim_panel.get_analysis_type() == "tran" else {
+                "tstep": 1e-9, "tstop": 1e-3, "tstart": 0.0
+            }
+        elif analysis == "ac":
+            params = self._sim_panel.get_params() if self._sim_panel.get_analysis_type() == "ac" else {
+                "sweep": AcSweepType.DEC, "points": 10, "fstart": 1.0, "fstop": 1e6
+            }
+        else:
+            params = {}
+
+        self._start_simulation(analysis, params)
 
     def _plot_dc_results(self, result: RunResult):
         """Plot DC sweep results in waveform viewer."""
