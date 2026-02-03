@@ -10,6 +10,7 @@ Provides the main window with dockable panels for:
 """
 
 import asyncio
+import cmath
 from pathlib import Path
 from typing import Optional
 
@@ -35,6 +36,9 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QFormLayout,
     QGroupBox,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
 )
 from PySide6.QtGui import QAction, QKeySequence, QFont, QIcon
 from PySide6.QtCore import Qt, QTimer, Slot
@@ -42,6 +46,8 @@ from PySide6.QtCore import Qt, QTimer, Slot
 from .client import MySpiceClient, RunResult, AnalysisType, AcSweepType, ClientError
 from .console import ConsoleWidget
 from .editor import NetlistEditor
+from .viewer import WaveformViewer, BodePlot, SignalListWidget, CursorManager
+from .viewer.cursors import CursorControlPanel
 
 
 class SimulationWorker:
@@ -253,7 +259,7 @@ class SimulationPanel(QWidget):
 
 
 class ResultsPanel(QWidget):
-    """Panel for displaying results."""
+    """Panel for displaying results with table and text views."""
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -263,14 +269,56 @@ class ResultsPanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
+        # Tab widget for different result views
+        self._tabs = QTabWidget()
+        layout.addWidget(self._tabs)
+
+        # Table view for OP/DC results
+        self._table = QTableWidget()
+        self._table.setColumnCount(2)
+        self._table.setHorizontalHeaderLabels(["Variable", "Value"])
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self._table.setAlternatingRowColors(True)
+        self._tabs.addTab(self._table, "Table")
+
+        # Text view for detailed output
         self._text = QPlainTextEdit()
         self._text.setReadOnly(True)
         self._text.setFont(QFont("Consolas", 9))
         self._text.setPlaceholderText("Results will appear here after simulation...")
-        layout.addWidget(self._text)
+        self._tabs.addTab(self._text, "Details")
+
+    def _format_value(self, value: float, unit: str = "") -> str:
+        """Format a value with engineering notation."""
+        if abs(value) == 0:
+            return f"0 {unit}".strip()
+
+        prefixes = [
+            (1e15, "P"), (1e12, "T"), (1e9, "G"), (1e6, "M"), (1e3, "k"),
+            (1, ""), (1e-3, "m"), (1e-6, "u"), (1e-9, "n"), (1e-12, "p"), (1e-15, "f"),
+        ]
+
+        abs_value = abs(value)
+        for scale, prefix in prefixes:
+            if abs_value >= scale:
+                return f"{value / scale:.4g} {prefix}{unit}".strip()
+
+        return f"{value:.4g} {unit}".strip()
 
     def show_op_results(self, result: RunResult):
         """Display operating point results."""
+        # Update table
+        self._table.setRowCount(0)
+        row = 0
+        for node, value in zip(result.nodes, result.solution):
+            if node != "0":  # Skip ground
+                self._table.insertRow(row)
+                self._table.setItem(row, 0, QTableWidgetItem(f"V({node})"))
+                self._table.setItem(row, 1, QTableWidgetItem(self._format_value(value, "V")))
+                row += 1
+
+        # Update text view
         lines = ["Operating Point Analysis", "=" * 40, ""]
         lines.append(f"Status: {result.status}")
         lines.append(f"Iterations: {result.iterations}")
@@ -279,55 +327,143 @@ class ResultsPanel(QWidget):
         lines.append("-" * 30)
 
         for node, value in zip(result.nodes, result.solution):
-            if node != "0":  # Skip ground
-                lines.append(f"  V({node:12s}) = {value:12.6g} V")
+            if node != "0":
+                lines.append(f"  V({node:12s}) = {self._format_value(value, 'V'):>15s}")
 
         self._text.setPlainText("\n".join(lines))
+        self._tabs.setCurrentIndex(0)  # Show table
 
     def show_dc_results(self, result: RunResult):
         """Display DC sweep results."""
+        # Show summary in table
+        self._table.setRowCount(3)
+        self._table.setItem(0, 0, QTableWidgetItem("Sweep Variable"))
+        self._table.setItem(0, 1, QTableWidgetItem(result.sweep_var or "N/A"))
+        self._table.setItem(1, 0, QTableWidgetItem("Points"))
+        self._table.setItem(1, 1, QTableWidgetItem(str(len(result.sweep_values))))
+        self._table.setItem(2, 0, QTableWidgetItem("Range"))
+        if result.sweep_values:
+            range_str = f"{result.sweep_values[0]:.3g} to {result.sweep_values[-1]:.3g}"
+        else:
+            range_str = "N/A"
+        self._table.setItem(2, 1, QTableWidgetItem(range_str))
+
+        # Update text view
         lines = ["DC Sweep Analysis", "=" * 40, ""]
         lines.append(f"Sweep Variable: {result.sweep_var}")
         lines.append(f"Points: {len(result.sweep_values)}")
         lines.append("")
 
         self._text.setPlainText("\n".join(lines))
+        self._tabs.setCurrentIndex(1)  # Show details
 
     def show_tran_results(self, result: RunResult):
         """Display transient results."""
+        # Show summary in table
+        self._table.setRowCount(3)
+        self._table.setItem(0, 0, QTableWidgetItem("Time Points"))
+        self._table.setItem(0, 1, QTableWidgetItem(str(len(result.tran_times))))
+        self._table.setItem(1, 0, QTableWidgetItem("Start Time"))
+        self._table.setItem(1, 1, QTableWidgetItem(
+            self._format_value(result.tran_times[0], "s") if result.tran_times else "N/A"
+        ))
+        self._table.setItem(2, 0, QTableWidgetItem("Stop Time"))
+        self._table.setItem(2, 1, QTableWidgetItem(
+            self._format_value(result.tran_times[-1], "s") if result.tran_times else "N/A"
+        ))
+
+        # Update text view
         lines = ["Transient Analysis", "=" * 40, ""]
         lines.append(f"Time Points: {len(result.tran_times)}")
         if result.tran_times:
-            lines.append(f"Time Range: {result.tran_times[0]:.3e} to {result.tran_times[-1]:.3e} s")
+            lines.append(f"Time Range: {self._format_value(result.tran_times[0], 's')} to "
+                        f"{self._format_value(result.tran_times[-1], 's')}")
         lines.append("")
 
         self._text.setPlainText("\n".join(lines))
+        self._tabs.setCurrentIndex(1)  # Show details
 
     def show_ac_results(self, result: RunResult):
         """Display AC analysis results."""
+        # Show summary in table
+        self._table.setRowCount(3)
+        self._table.setItem(0, 0, QTableWidgetItem("Frequency Points"))
+        self._table.setItem(0, 1, QTableWidgetItem(str(len(result.ac_frequencies))))
+        self._table.setItem(1, 0, QTableWidgetItem("Start Frequency"))
+        self._table.setItem(1, 1, QTableWidgetItem(
+            self._format_value(result.ac_frequencies[0], "Hz") if result.ac_frequencies else "N/A"
+        ))
+        self._table.setItem(2, 0, QTableWidgetItem("Stop Frequency"))
+        self._table.setItem(2, 1, QTableWidgetItem(
+            self._format_value(result.ac_frequencies[-1], "Hz") if result.ac_frequencies else "N/A"
+        ))
+
+        # Update text view
         lines = ["AC Analysis", "=" * 40, ""]
         lines.append(f"Frequency Points: {len(result.ac_frequencies)}")
         if result.ac_frequencies:
-            lines.append(f"Frequency Range: {result.ac_frequencies[0]:.3e} to {result.ac_frequencies[-1]:.3e} Hz")
+            lines.append(f"Frequency Range: {self._format_value(result.ac_frequencies[0], 'Hz')} to "
+                        f"{self._format_value(result.ac_frequencies[-1], 'Hz')}")
         lines.append("")
 
         self._text.setPlainText("\n".join(lines))
+        self._tabs.setCurrentIndex(1)  # Show details
 
     def clear(self):
         """Clear results."""
+        self._table.setRowCount(0)
         self._text.clear()
 
 
-class WaveformPlaceholder(QWidget):
-    """Placeholder for waveform viewer (will be implemented in Phase 4)."""
+class ViewerPanel(QWidget):
+    """
+    Panel for waveform and Bode plot viewers.
+
+    Provides tabbed interface for:
+    - Time-domain waveform viewer (TRAN, DC)
+    - Bode plot viewer (AC)
+    """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self):
         layout = QVBoxLayout(self)
-        label = QLabel("Waveform Viewer\n(Coming in Phase 4)")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("color: #888; font-size: 14px;")
-        layout.addWidget(label)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Tab widget for different viewers
+        self._tabs = QTabWidget()
+        layout.addWidget(self._tabs)
+
+        # Waveform viewer for time-domain (TRAN) and DC
+        self._waveform = WaveformViewer()
+        self._tabs.addTab(self._waveform, "Waveform")
+
+        # Bode plot for AC analysis
+        self._bode = BodePlot()
+        self._tabs.addTab(self._bode, "Bode")
+
+    def get_waveform_viewer(self) -> WaveformViewer:
+        """Get the waveform viewer widget."""
+        return self._waveform
+
+    def get_bode_plot(self) -> BodePlot:
+        """Get the Bode plot widget."""
+        return self._bode
+
+    def show_waveform_tab(self):
+        """Switch to waveform tab."""
+        self._tabs.setCurrentIndex(0)
+
+    def show_bode_tab(self):
+        """Switch to Bode plot tab."""
+        self._tabs.setCurrentIndex(1)
+
+    def clear_all(self):
+        """Clear all viewers."""
+        self._waveform.clear()
+        self._bode.clear()
 
 
 class MainWindow(QMainWindow):
@@ -388,8 +524,8 @@ C1 out 0 100n
         # Right panel: Results/Waveform
         right_splitter = QSplitter(Qt.Orientation.Vertical)
 
-        self._waveform = WaveformPlaceholder()
-        right_splitter.addWidget(self._waveform)
+        self._viewer_panel = ViewerPanel()
+        right_splitter.addWidget(self._viewer_panel)
 
         self._results = ResultsPanel()
         right_splitter.addWidget(self._results)
@@ -404,6 +540,25 @@ C1 out 0 100n
         self._sim_panel = SimulationPanel()
         self._sim_dock.setWidget(self._sim_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._sim_dock)
+
+        # Dock: Signal List
+        self._signal_dock = QDockWidget("Signals", self)
+        self._signal_list = SignalListWidget()
+        self._signal_dock.setWidget(self._signal_list)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._signal_dock)
+
+        # Dock: Cursor Controls
+        self._cursor_dock = QDockWidget("Cursors", self)
+        waveform_plot = self._viewer_panel.get_waveform_viewer().get_plot_widget()
+        self._cursor_manager = CursorManager(waveform_plot)
+        self._cursor_panel = CursorControlPanel(self._cursor_manager)
+        self._cursor_dock.setWidget(self._cursor_panel)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self._cursor_dock)
+
+        # Tab the right-side docks
+        self.tabifyDockWidget(self._sim_dock, self._signal_dock)
+        self.tabifyDockWidget(self._signal_dock, self._cursor_dock)
+        self._sim_dock.raise_()  # Show simulation panel by default
 
         # Dock: Console
         self._console_dock = QDockWidget("Console", self)
@@ -508,9 +663,32 @@ C1 out 0 100n
         self._view_sim_action.setText("&Simulation Panel")
         view_menu.addAction(self._view_sim_action)
 
+        self._view_signals_action = self._signal_dock.toggleViewAction()
+        self._view_signals_action.setText("Si&gnals Panel")
+        view_menu.addAction(self._view_signals_action)
+
+        self._view_cursors_action = self._cursor_dock.toggleViewAction()
+        self._view_cursors_action.setText("C&ursors Panel")
+        view_menu.addAction(self._view_cursors_action)
+
         self._view_console_action = self._console_dock.toggleViewAction()
         self._view_console_action.setText("&Console")
         view_menu.addAction(self._view_console_action)
+
+        view_menu.addSeparator()
+
+        # Clear viewers action
+        self._clear_viewers_action = QAction("Clear &All Viewers", self)
+        self._clear_viewers_action.triggered.connect(self._clear_all_viewers)
+        view_menu.addAction(self._clear_viewers_action)
+
+    def _clear_all_viewers(self):
+        """Clear all viewer content."""
+        self._viewer_panel.clear_all()
+        self._signal_list.clear()
+        self._cursor_manager.clear()
+        self._results.clear()
+        self._console.info("Cleared all viewers")
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -555,6 +733,43 @@ C1 out 0 100n
         """Set up signal connections."""
         self._editor.textChanged.connect(self._on_text_changed)
         self._editor.cursor_position_changed.connect(self._on_cursor_position_changed)
+
+        # Signal list connections
+        self._signal_list.signal_visibility_changed.connect(self._on_signal_visibility_changed)
+        self._signal_list.signal_color_changed.connect(self._on_signal_color_changed)
+        self._signal_list.signal_removed.connect(self._on_signal_removed)
+
+        # Cursor position updates
+        waveform = self._viewer_panel.get_waveform_viewer()
+        waveform.cursor_moved.connect(self._on_waveform_cursor_moved)
+
+    @Slot(str, bool)
+    def _on_signal_visibility_changed(self, name: str, visible: bool):
+        """Handle signal visibility change."""
+        waveform = self._viewer_panel.get_waveform_viewer()
+        bode = self._viewer_panel.get_bode_plot()
+        waveform.set_signal_visible(name, visible)
+        bode.set_signal_visible(name, visible)
+
+    @Slot(str, str)
+    def _on_signal_color_changed(self, name: str, color: str):
+        """Handle signal color change."""
+        waveform = self._viewer_panel.get_waveform_viewer()
+        waveform.set_signal_color(name, color)
+
+    @Slot(str)
+    def _on_signal_removed(self, name: str):
+        """Handle signal removal."""
+        waveform = self._viewer_panel.get_waveform_viewer()
+        bode = self._viewer_panel.get_bode_plot()
+        waveform.remove_signal(name)
+        bode.remove_signal(name)
+
+    @Slot(float, float)
+    def _on_waveform_cursor_moved(self, x: float, y: float):
+        """Handle cursor movement in waveform viewer."""
+        # Update cursor panel readout
+        self._cursor_panel.refresh()
 
     @Slot(int, int)
     def _on_cursor_position_changed(self, line: int, column: int):
@@ -694,14 +909,17 @@ C1 out 0 100n
                 params = self._sim_panel.get_dc_params()
                 result = self._worker.run_dc(netlist, **params)
                 self._results.show_dc_results(result)
+                self._plot_dc_results(result)
             elif analysis == "tran":
                 params = self._sim_panel.get_tran_params()
                 result = self._worker.run_tran(netlist, **params)
                 self._results.show_tran_results(result)
+                self._plot_tran_results(result)
             elif analysis == "ac":
                 params = self._sim_panel.get_ac_params()
                 result = self._worker.run_ac(netlist, **params)
                 self._results.show_ac_results(result)
+                self._plot_ac_results(result)
             else:
                 self._console.error(f"Unknown analysis type: {analysis}")
                 return
@@ -724,6 +942,96 @@ C1 out 0 100n
         except Exception as e:
             self._console.error(f"Error: {e}")
             self._statusbar.showMessage("Error occurred", 5000)
+
+    def _plot_dc_results(self, result: RunResult):
+        """Plot DC sweep results in waveform viewer."""
+        waveform = self._viewer_panel.get_waveform_viewer()
+        waveform.clear()
+        self._signal_list.clear()
+
+        if not result.sweep_values or not result.dc_values:
+            return
+
+        x_data = result.sweep_values
+        waveform.set_labels(result.sweep_var or "Sweep", "V", "Voltage", "V")
+        waveform.set_title(f"DC Sweep: {result.sweep_var}")
+
+        for node, values in result.dc_values.items():
+            if node != "0":  # Skip ground
+                name = f"V({node})"
+                waveform.add_signal(name, x_data, values)
+                color = waveform._signals[name].color if name in waveform._signals else "#1f77b4"
+                self._signal_list.add_signal(name, color)
+
+        waveform.auto_scale()
+        self._viewer_panel.show_waveform_tab()
+        self._signal_dock.raise_()
+
+    def _plot_tran_results(self, result: RunResult):
+        """Plot transient results in waveform viewer."""
+        waveform = self._viewer_panel.get_waveform_viewer()
+        waveform.clear()
+        self._signal_list.clear()
+
+        if not result.tran_times or not result.tran_values:
+            return
+
+        x_data = result.tran_times
+        waveform.set_labels("Time", "s", "Voltage", "V")
+        waveform.set_title("Transient Analysis")
+
+        for node, values in result.tran_values.items():
+            if node != "0":  # Skip ground
+                name = f"V({node})"
+                waveform.add_signal(name, x_data, values)
+                color = waveform._signals[name].color if name in waveform._signals else "#1f77b4"
+                self._signal_list.add_signal(name, color)
+
+        waveform.auto_scale()
+        self._viewer_panel.show_waveform_tab()
+        self._signal_dock.raise_()
+
+    def _plot_ac_results(self, result: RunResult):
+        """Plot AC results in Bode plot."""
+        import math
+
+        bode = self._viewer_panel.get_bode_plot()
+        bode.clear()
+        self._signal_list.clear()
+
+        if not result.ac_frequencies or not result.ac_values:
+            return
+
+        frequencies = result.ac_frequencies
+
+        for node, complex_values in result.ac_values.items():
+            if node != "0":  # Skip ground
+                name = f"V({node})"
+                # Convert complex values to magnitude (dB) and phase (degrees)
+                magnitude_db = []
+                phase_deg = []
+                for cval in complex_values:
+                    if isinstance(cval, complex):
+                        mag = abs(cval)
+                        phase = cmath.phase(cval)
+                    else:
+                        # Handle as [real, imag] list
+                        c = complex(cval[0], cval[1]) if isinstance(cval, (list, tuple)) else complex(cval)
+                        mag = abs(c)
+                        phase = cmath.phase(c)
+
+                    # Convert to dB (avoid log(0))
+                    mag_db = 20 * math.log10(mag) if mag > 0 else -200
+                    magnitude_db.append(mag_db)
+                    phase_deg.append(math.degrees(phase))
+
+                bode.add_signal(name, frequencies, magnitude_db, phase_deg)
+                color = bode._signals[name].color if name in bode._signals else "#1f77b4"
+                self._signal_list.add_signal(name, color)
+
+        bode.auto_scale()
+        self._viewer_panel.show_bode_tab()
+        self._signal_dock.raise_()
 
     @Slot()
     def _on_about(self):

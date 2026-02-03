@@ -10,8 +10,28 @@ Graphical user interface for MySpice circuit simulator, built with PySide6 (Qt f
   - Auto-completion for device types, commands, node names
   - Smart indentation (Tab/Shift+Tab)
   - Cursor position tracking
+- **Waveform Viewer**: Interactive time-domain plotting with:
+  - Multi-signal display with individual colors
+  - Mouse wheel zoom and click-drag pan
+  - Auto-scale and reset view
+  - Grid toggle
+  - Export to PNG/SVG
+- **Bode Plot**: AC analysis visualization with:
+  - Magnitude (dB) vs frequency
+  - Phase (degrees) vs frequency
+  - Logarithmic frequency axis
+  - Linked X-axes for synchronized zooming
+- **Measurement Cursors**:
+  - Draggable vertical cursors
+  - Delta time measurement
+  - Frequency calculation (1/Delta)
+  - Engineering notation display
+- **Signal List Panel**:
+  - Visibility checkboxes per signal
+  - Color picker for each signal
+  - Show all / Hide all buttons
 - **Simulation Control**: Run OP, DC, TRAN, AC analyses
-- **Results Panel**: View operating point and analysis results
+- **Results Panel**: Table and text views for results with engineering notation
 - **Console Output**: Colored log messages with timestamps
 - **Dockable Panels**: Flexible layout customization
 
@@ -75,28 +95,32 @@ myspice-gui my_circuit.cir
 ## Screenshot
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  MySpice - rc_lowpass.cir                                      [─][□][×]
-├─────────────────────────────────────────────────────────────────────┤
-│  File  Edit  Simulate  View  Help                                   │
-├─────────────────────────────────────────────────────────────────────┤
-│  [New] [Open] [Save] │ [Run ▶]                                      │
-├───────────────────┬─────────────────────────────────────────────────┤
-│                   │                                                 │
-│   * RC circuit    │   Waveform Viewer (Phase 4)                     │
-│   V1 in 0 5       │                                                 │
-│   R1 in out 1k    ├─────────────────────────────────────────────────┤
-│   C1 out 0 100n   │   Operating Point Analysis                      │
-│   .tran 10n 50u   │   ========================================      │
-│   .end            │   Status: Success                               │
-│                   │   V(in)  = 5.000000 V                           │
-│                   │   V(out) = 3.333333 V                           │
-├───────────────────┴─────────────────────────────────────────────────┤
-│ Console                                                             │
-│ [12:34:56] Connected to server at http://127.0.0.1:3000            │
-│ [12:34:58] Running OP analysis...                                   │
-│ [12:34:58] OP analysis completed successfully                       │
-└─────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│  MySpice - rc_lowpass.cir                                              [─][□][×]
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  File  Edit  Simulate  View  Help                                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│  [New] [Open] [Save] │ [Run ▶]                                                  │
+├────────────────────┬────────────────────────────────────┬───────────────────────┤
+│                    │ [Waveform] [Bode]                  │ [Simulation][Signals] │
+│   * RC circuit     │ ┌───────────────────────────────┐  │                       │
+│   V1 in 0 5        │ │     ^                         │  │ Transient Analysis    │
+│   R1 in out 1k     │ │   5 │  ___    ___    ___     │  │ tstep: [    1n  ]     │
+│   C1 out 0 100n    │ │     │ /   \  /   \  /        │  │ tstop: [    1m  ]     │
+│   .tran 10n 50u    │ │   0 │/     \/     \/         │  │                       │
+│   .end             │ │     +------------------→ t   │  ├───────────────────────┤
+│                    │ └───────────────────────────────┘  │ Signals               │
+│                    ├────────────────────────────────────┤ [√] ■ V(in)     [×]  │
+│                    │ Variable      │ Value              │ [√] ■ V(out)    [×]  │
+│                    │───────────────┼────────────────────│ [All] [None]         │
+│                    │ Time Points   │ 5001               ├───────────────────────┤
+│                    │ Start Time    │ 0 s                │ Cursors               │
+│                    │ Stop Time     │ 50 us              │ C1: 10.0 us           │
+├────────────────────┴────────────────────────────────────┤ C2: 35.0 us           │
+│ Console                                                 │ Δ:  25.0 us           │
+│ [12:34:56] Connected to server                         │ 1/Δ: 40.0 kHz         │
+│ [12:34:58] TRAN analysis completed successfully        │ [Add C1][Add C2][Clr] │
+└─────────────────────────────────────────────────────────┴───────────────────────┘
 ```
 
 ## Architecture
@@ -112,6 +136,12 @@ myspice_gui/
 │   ├── editor.py     # Main editor with line numbers
 │   ├── highlighter.py # Syntax highlighting
 │   └── completer.py  # Auto-completion
+├── viewer/           # Waveform viewer components
+│   ├── __init__.py
+│   ├── waveform.py   # Time-domain waveform viewer
+│   ├── bode.py       # Bode plot for AC analysis
+│   ├── signal_list.py # Signal list with visibility
+│   └── cursors.py    # Measurement cursors
 └── console/          # Console output widget
     ├── __init__.py
     └── console.py
@@ -136,10 +166,11 @@ ruff check myspice_gui/
 
 - [x] **Phase 1**: Core infrastructure, main window, HTTP client, console
 - [x] **Phase 2**: Netlist editor with syntax highlighting
-- [ ] **Phase 3**: Simulation control panel improvements
-- [ ] **Phase 4**: Waveform viewer with pyqtgraph
-- [ ] **Phase 5**: Results table, Bode plot, polish
-- [ ] **Phase 6**: Advanced features (cursors, FFT, themes)
+- [x] **Phase 3**: Simulation control panel with tabbed analysis types
+- [x] **Phase 4**: Waveform viewer with pyqtgraph
+- [x] **Phase 5**: Results table, Bode plot, signal list
+- [x] **Phase 6**: Measurement cursors with delta display
+- [ ] **Future**: Themes (dark/light), FFT analysis, waveform export
 
 ## Syntax Highlighting
 
