@@ -649,11 +649,11 @@ cargo test --workspace --exclude sim-cli
 
 ### 进行中
 - [x] AI 代理集成与交互协议 ✅ 已完成 (2026-02-02)
-- [ ] 自适应时间步长优化 🔄 进行中 (详见 `docs/adaptive_timestep_plan.md`)
+- [x] 自适应时间步长优化 ✅ 已完成 (详见 `docs/adaptive_timestep_plan.md`)
   - [x] LTE 误差估计 (Milne's Device) ✅ Phase 1 完成
   - [x] PI 控制器步长调整 ✅ Phase 2 完成
-  - [ ] Trapezoidal 积分方法 (Phase 3)
-  - [ ] PWL/PULSE 断点处理 (Phase 4)
+  - [x] Trapezoidal 积分方法 ✅ Phase 3 完成
+  - [x] PWL/PULSE 断点处理 ✅ Phase 4 完成
 
 ### 后续计划
 - [ ] 更完善的受控源语法（POLY 细节）

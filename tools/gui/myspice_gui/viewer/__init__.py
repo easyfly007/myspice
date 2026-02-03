@@ -6,12 +6,14 @@ This module provides:
 - BodePlot: Magnitude and phase plots for AC analysis
 - SignalList: Signal selection with visibility toggles
 - Cursors: Measurement cursors for waveform analysis
+- ResultsTable: Enhanced results table with export/filter
 """
 
 from .waveform import WaveformViewer
 from .bode import BodePlot
 from .signal_list import SignalListWidget
 from .cursors import CursorManager, Cursor, CursorControlPanel, CursorReadout
+from .table import ResultsTable
 
 __all__ = [
     "WaveformViewer",
@@ -21,4 +23,5 @@ __all__ = [
     "Cursor",
     "CursorControlPanel",
     "CursorReadout",
+    "ResultsTable",
 ]

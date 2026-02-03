@@ -430,7 +430,7 @@ HIGHLIGHT_RULES = [
 - Right click: Context menu (reset zoom, export)
 - Double click: Add cursor
 
-### Phase 5: Results & Polish (Week 5)
+### Phase 5: Results & Polish (Week 5) ✅
 
 **Goals:**
 - Operating point results table
@@ -438,12 +438,35 @@ HIGHLIGHT_RULES = [
 - UI polish
 
 **Deliverables:**
-- [ ] ResultsTable for OP
-- [ ] Bode plot (magnitude + phase)
-- [ ] DC sweep plot
-- [ ] Keyboard shortcuts
-- [ ] Application icon
-- [ ] Dark/light theme toggle
+- [x] ResultsTable for OP
+- [x] Bode plot (magnitude + phase)
+- [x] DC sweep plot
+- [x] Keyboard shortcuts
+- [ ] Application icon (optional)
+- [x] Dark/light theme toggle
+
+**Implementation Notes (2026-02-03):**
+- Created `myspice_gui/viewer/table.py`: Enhanced ResultsTable with:
+  - Sortable columns
+  - Copy to clipboard (Ctrl+C)
+  - Export to CSV
+  - Search/filter functionality
+  - Engineering notation formatting
+  - Context menu
+- Created `myspice_gui/theme.py`: ThemeManager with:
+  - Light and dark themes
+  - Automatic stylesheet generation
+  - QPalette generation
+  - Settings persistence
+  - Plot color adaptation
+- Added keyboard shortcuts:
+  - F5: Run simulation
+  - Escape: Stop simulation
+  - Ctrl+R: Re-run simulation
+  - Ctrl+L: Clear console
+  - Ctrl+1/2/3: Switch panels
+  - Ctrl+Shift+T: Toggle theme
+- Added View > Theme menu with Light/Dark options
 
 ### Phase 6: Advanced Features (Week 6+)
 

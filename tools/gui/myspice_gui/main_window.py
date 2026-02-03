@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtWidgets import (
+    QApplication,
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -45,10 +46,11 @@ from PySide6.QtCore import Qt, QTimer, Slot
 from .client import MySpiceClient, RunResult, AnalysisType, AcSweepType, ClientError
 from .console import ConsoleWidget
 from .editor import NetlistEditor
-from .viewer import WaveformViewer, BodePlot, SignalListWidget, CursorManager
+from .viewer import WaveformViewer, BodePlot, SignalListWidget, CursorManager, ResultsTable
 from .viewer.cursors import CursorControlPanel
 from .simulation import SimulationPanel, SimulationWorker, SimulationTask
 from .simulation.worker import AnalysisType as SimAnalysisType, ConnectionChecker
+from .theme import ThemeManager, ThemeMode, theme_manager
 
 
 class ResultsPanel(QWidget):
@@ -285,6 +287,10 @@ class MainWindow(QMainWindow):
         self._setup_toolbar()
         self._setup_statusbar()
         self._setup_connections()
+        self._setup_shortcuts()
+
+        # Apply saved theme
+        QTimer.singleShot(50, self._apply_initial_theme)
 
         # Check server connection (non-blocking)
         QTimer.singleShot(100, self._check_server)
@@ -476,13 +482,30 @@ C1 out 0 100n
         self._clear_viewers_action.triggered.connect(self._clear_all_viewers)
         view_menu.addAction(self._clear_viewers_action)
 
-    def _clear_all_viewers(self):
-        """Clear all viewer content."""
-        self._viewer_panel.clear_all()
-        self._signal_list.clear()
-        self._cursor_manager.clear()
-        self._results.clear()
-        self._console.info("Cleared all viewers")
+        view_menu.addSeparator()
+
+        # Theme submenu
+        theme_menu = view_menu.addMenu("&Theme")
+
+        self._theme_light_action = QAction("&Light", self)
+        self._theme_light_action.setCheckable(True)
+        self._theme_light_action.triggered.connect(lambda: self._set_theme(ThemeMode.LIGHT))
+        theme_menu.addAction(self._theme_light_action)
+
+        self._theme_dark_action = QAction("&Dark", self)
+        self._theme_dark_action.setCheckable(True)
+        self._theme_dark_action.triggered.connect(lambda: self._set_theme(ThemeMode.DARK))
+        theme_menu.addAction(self._theme_dark_action)
+
+        theme_menu.addSeparator()
+
+        self._theme_toggle_action = QAction("&Toggle Theme", self)
+        self._theme_toggle_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        self._theme_toggle_action.triggered.connect(self._toggle_theme)
+        theme_menu.addAction(self._theme_toggle_action)
+
+        # Update theme checkmarks based on current theme
+        self._update_theme_actions()
 
         # Help menu
         help_menu = menubar.addMenu("&Help")
@@ -540,6 +563,98 @@ C1 out 0 100n
         # Simulation panel connections
         self._sim_panel.run_requested.connect(self._on_simulation_requested)
         self._sim_panel.stop_requested.connect(self._on_simulation_stop_requested)
+
+    def _clear_all_viewers(self):
+        """Clear all viewer content."""
+        self._viewer_panel.clear_all()
+        self._signal_list.clear()
+        self._cursor_manager.clear()
+        self._results.clear()
+        self._console.info("Cleared all viewers")
+
+    def _set_theme(self, mode: ThemeMode):
+        """Set the application theme."""
+        theme_manager.set_theme(mode)
+        theme_manager.apply_to_app(QApplication.instance())
+        self._update_theme_actions()
+        self._apply_theme_to_plots()
+        self._console.info(f"Theme changed to {mode.value}")
+
+    def _toggle_theme(self):
+        """Toggle between light and dark themes."""
+        new_mode = theme_manager.toggle_theme()
+        theme_manager.apply_to_app(QApplication.instance())
+        self._update_theme_actions()
+        self._apply_theme_to_plots()
+        self._console.info(f"Theme changed to {new_mode.value}")
+
+    def _update_theme_actions(self):
+        """Update theme action checkmarks."""
+        current = theme_manager.current_theme
+        self._theme_light_action.setChecked(current == ThemeMode.LIGHT)
+        self._theme_dark_action.setChecked(current == ThemeMode.DARK)
+
+    def _apply_theme_to_plots(self):
+        """Apply current theme to plot widgets."""
+        colors = theme_manager.get_plot_colors()
+        bg = colors["background"]
+
+        # Update waveform viewer
+        waveform = self._viewer_panel.get_waveform_viewer()
+        waveform.get_plot_widget().setBackground(bg)
+
+        # Update bode plot
+        bode = self._viewer_panel.get_bode_plot()
+        bode.get_magnitude_plot().setBackground(bg)
+        bode.get_phase_plot().setBackground(bg)
+
+    def _apply_initial_theme(self):
+        """Apply the saved theme on startup."""
+        theme_manager.load_saved_theme()
+        theme_manager.apply_to_app(QApplication.instance())
+        self._update_theme_actions()
+        self._apply_theme_to_plots()
+
+    def _setup_shortcuts(self):
+        """Set up additional keyboard shortcuts."""
+        # F5: Run simulation
+        # Already set via _run_action
+
+        # Escape: Stop simulation
+        stop_shortcut = QAction("Stop", self)
+        stop_shortcut.setShortcut(QKeySequence("Escape"))
+        stop_shortcut.triggered.connect(self._on_simulation_stop_requested)
+        self.addAction(stop_shortcut)
+
+        # Ctrl+R: Refresh/re-run
+        refresh_action = QAction("Refresh", self)
+        refresh_action.setShortcut(QKeySequence("Ctrl+R"))
+        refresh_action.triggered.connect(self._on_run)
+        self.addAction(refresh_action)
+
+        # Ctrl+L: Clear console
+        clear_console_action = QAction("Clear Console", self)
+        clear_console_action.setShortcut(QKeySequence("Ctrl+L"))
+        clear_console_action.triggered.connect(self._console.clear)
+        self.addAction(clear_console_action)
+
+        # Ctrl+1: Show simulation panel
+        show_sim_action = QAction("Show Simulation", self)
+        show_sim_action.setShortcut(QKeySequence("Ctrl+1"))
+        show_sim_action.triggered.connect(lambda: self._sim_dock.raise_())
+        self.addAction(show_sim_action)
+
+        # Ctrl+2: Show signals panel
+        show_signals_action = QAction("Show Signals", self)
+        show_signals_action.setShortcut(QKeySequence("Ctrl+2"))
+        show_signals_action.triggered.connect(lambda: self._signal_dock.raise_())
+        self.addAction(show_signals_action)
+
+        # Ctrl+3: Show cursors panel
+        show_cursors_action = QAction("Show Cursors", self)
+        show_cursors_action.setShortcut(QKeySequence("Ctrl+3"))
+        show_cursors_action.triggered.connect(lambda: self._cursor_dock.raise_())
+        self.addAction(show_cursors_action)
 
     @Slot(str, bool)
     def _on_signal_visibility_changed(self, name: str, visible: bool):
