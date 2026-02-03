@@ -2,6 +2,7 @@ pub mod netlist;
 pub mod topology;
 pub mod mna;
 pub mod solver;
+pub mod sparse_lu;
 pub mod session;
 pub mod result_store;
 pub mod circuit;

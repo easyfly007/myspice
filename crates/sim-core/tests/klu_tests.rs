@@ -1,11 +1,13 @@
-//! KLU Sparse Solver Tests
+//! Sparse Solver Tests
 //!
-//! These tests verify the KLU solver implementation.
-//! Tests without `#[cfg(feature = "klu")]` run on the fallback behavior.
+//! These tests verify the sparse solver implementations (KLU and Faer).
+//! Tests without feature gates run on the fallback Dense solver.
 
 #[cfg(feature = "klu")]
 use sim_core::solver::KluSolver;
-use sim_core::solver::{create_solver, DenseSolver, LinearSolver, SolverType};
+#[cfg(feature = "faer-solver")]
+use sim_core::solver::FaerSolver;
+use sim_core::solver::{create_solver, create_solver_auto, DenseSolver, LinearSolver, SolverType};
 
 // ============================================================================
 // Helper Functions
@@ -489,4 +491,179 @@ fn test_klu_repeated_refactorization() {
     // Should have 1 full factor and 9 refactors
     assert_eq!(solver.factor_count, 1);
     assert_eq!(solver.refactor_count, 9);
+}
+
+// ============================================================================
+// Faer Solver Tests (only run with feature enabled)
+// ============================================================================
+
+#[cfg(feature = "faer-solver")]
+mod faer_tests {
+    use super::*;
+
+    #[test]
+    fn test_faer_solver_3x3() {
+        let (ap, ai, ax, mut rhs) = build_tridiagonal_3x3();
+        let n = 3;
+
+        let mut solver = FaerSolver::new(n);
+        solver.prepare(n);
+        solver.analyze(&ap, &ai).unwrap();
+        solver.factor(&ap, &ai, &ax).unwrap();
+        solver.solve(&mut rhs).unwrap();
+
+        // Same expected solution as dense: [1/7, 3/7, 1/7]
+        assert!(
+            (rhs[0] - 1.0 / 7.0).abs() < 0.01,
+            "rhs[0] = {}, expected {}",
+            rhs[0],
+            1.0 / 7.0
+        );
+        assert!(
+            (rhs[1] - 3.0 / 7.0).abs() < 0.01,
+            "rhs[1] = {}, expected {}",
+            rhs[1],
+            3.0 / 7.0
+        );
+        assert!(
+            (rhs[2] - 1.0 / 7.0).abs() < 0.01,
+            "rhs[2] = {}, expected {}",
+            rhs[2],
+            1.0 / 7.0
+        );
+    }
+
+    #[test]
+    fn test_faer_vs_dense_comparison() {
+        let (ap, ai, ax, rhs) = build_resistor_ladder(20);
+        let n = 20;
+
+        // Solve with Dense
+        let mut rhs_dense = rhs.clone();
+        let mut dense = DenseSolver::new(n);
+        dense.prepare(n);
+        dense.analyze(&ap, &ai).unwrap();
+        dense.factor(&ap, &ai, &ax).unwrap();
+        dense.solve(&mut rhs_dense).unwrap();
+
+        // Solve with Faer
+        let mut rhs_faer = rhs.clone();
+        let mut faer = FaerSolver::new(n);
+        faer.prepare(n);
+        faer.analyze(&ap, &ai).unwrap();
+        faer.factor(&ap, &ai, &ax).unwrap();
+        faer.solve(&mut rhs_faer).unwrap();
+
+        // Solutions should match
+        for i in 0..n {
+            assert!(
+                (rhs_dense[i] - rhs_faer[i]).abs() < 1e-10,
+                "Mismatch at index {}: dense={}, faer={}",
+                i,
+                rhs_dense[i],
+                rhs_faer[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_faer_pattern_caching() {
+        let (ap, ai, ax, _) = build_tridiagonal_3x3();
+        let n = 3;
+
+        let mut solver = FaerSolver::new(n);
+        solver.prepare(n);
+
+        // First analysis
+        solver.analyze(&ap, &ai).unwrap();
+
+        // Second analysis with same pattern - should be cached (no error)
+        solver.analyze(&ap, &ai).unwrap();
+
+        // Factor should work
+        solver.factor(&ap, &ai, &ax).unwrap();
+        assert_eq!(solver.factor_count, 1);
+    }
+
+    #[test]
+    fn test_faer_larger_matrix() {
+        let n = 100;
+        let (ap, ai, ax, mut rhs) = build_resistor_ladder(n);
+        let original_rhs = rhs.clone();
+
+        let mut solver = FaerSolver::new(n);
+        solver.prepare(n);
+        solver.analyze(&ap, &ai).unwrap();
+        solver.factor(&ap, &ai, &ax).unwrap();
+        solver.solve(&mut rhs).unwrap();
+
+        // Verify solution by computing Ax and comparing to original RHS
+        for i in 0..n {
+            let mut ax_i = 2.0 * rhs[i];
+            if i > 0 {
+                ax_i -= rhs[i - 1];
+            }
+            if i < n - 1 {
+                ax_i -= rhs[i + 1];
+            }
+            assert!(
+                (ax_i - original_rhs[i]).abs() < 1e-9,
+                "Residual at node {}: Ax={}, b={}",
+                i,
+                ax_i,
+                original_rhs[i]
+            );
+        }
+    }
+
+    #[test]
+    fn test_faer_solver_name() {
+        let solver = FaerSolver::new(3);
+        assert_eq!(solver.name(), "Faer");
+    }
+
+    #[test]
+    fn test_faer_reset_pattern() {
+        let (ap, ai, ax, mut rhs) = build_tridiagonal_3x3();
+        let n = 3;
+
+        let mut solver = FaerSolver::new(n);
+        solver.prepare(n);
+        solver.analyze(&ap, &ai).unwrap();
+        solver.factor(&ap, &ai, &ax).unwrap();
+
+        // Reset pattern
+        solver.reset_pattern();
+
+        // Should need to re-analyze
+        solver.analyze(&ap, &ai).unwrap();
+        solver.factor(&ap, &ai, &ax).unwrap();
+        solver.solve(&mut rhs).unwrap();
+
+        // Should still work correctly: [1/7, 3/7, 1/7]
+        assert!((rhs[0] - 1.0 / 7.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_create_solver_auto_selects_faer() {
+        // When only faer-solver is enabled (not klu), should select Faer
+        let solver = create_solver_auto(10);
+        #[cfg(not(feature = "klu"))]
+        {
+            assert_eq!(solver.name(), "Faer");
+        }
+    }
+
+    #[test]
+    fn test_faer_via_solver_type() {
+        let (ap, ai, ax, mut rhs) = build_tridiagonal_3x3();
+        let mut solver = create_solver(SolverType::Faer, 3);
+        solver.prepare(3);
+        solver.analyze(&ap, &ai).unwrap();
+        solver.factor(&ap, &ai, &ax).unwrap();
+        solver.solve(&mut rhs).unwrap();
+
+        // Should work correctly
+        assert!((rhs[1] - 3.0 / 7.0).abs() < 0.01);
+    }
 }

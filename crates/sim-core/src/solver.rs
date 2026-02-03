@@ -1,10 +1,29 @@
 //! Linear Solver Module
 //!
 //! This module provides linear equation solvers for circuit simulation.
-//! It includes both a dense solver (for small circuits) and a sparse KLU solver
-//! (for large circuits with sparse matrices).
+//! Multiple solver backends are available:
 //!
-//! # KLU Sparse Solver
+//! | Solver | Feature | Performance | Dependencies |
+//! |--------|---------|-------------|--------------|
+//! | Dense  | (always) | O(n³) | None |
+//! | SparseLU | (always) | O(nnz·fill) | None (native Rust) |
+//! | Faer   | `faer-solver` (default) | O(nnz·fill) | Pure Rust |
+//! | KLU    | `klu` | O(nnz·fill), fastest | SuiteSparse (C) |
+//!
+//! # Faer Sparse Solver (Recommended for Easy Setup)
+//!
+//! Faer is a pure Rust linear algebra library with sparse support.
+//! It's enabled by default and requires no external dependencies:
+//!
+//! ```bash
+//! # Build with default features (includes faer)
+//! cargo build
+//!
+//! # Or explicitly enable
+//! cargo build --features faer-solver
+//! ```
+//!
+//! # KLU Sparse Solver (Best Performance)
 //!
 //! KLU is a high-performance sparse LU factorization library from SuiteSparse,
 //! optimized for circuit simulation matrices. To enable KLU:
@@ -20,13 +39,20 @@
 //! cargo build --features klu
 //! ```
 //!
+//! # Solver Selection
+//!
+//! Use `create_solver_auto()` for automatic selection based on available features:
+//! - Prefers KLU if available (best performance)
+//! - Falls back to Faer if available (pure Rust)
+//! - Falls back to Dense as last resort
+//!
 //! # Usage
 //!
 //! ```ignore
-//! use sim_core::solver::{create_solver, SolverType, LinearSolver};
+//! use sim_core::solver::{create_solver_auto, LinearSolver};
 //!
-//! // Create a KLU solver (falls back to Dense if KLU unavailable)
-//! let mut solver = create_solver(SolverType::Klu, 100);
+//! // Create best available solver
+//! let mut solver = create_solver_auto(100);
 //!
 //! // Prepare for matrix of size n
 //! solver.prepare(n);
@@ -88,26 +114,60 @@ impl fmt::Display for SolverError {
 
 impl std::error::Error for SolverError {}
 
-/// 求解器类型选择
+/// Solver type selection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SolverType {
+    /// Dense LU solver - O(n³), suitable for n < 100
     #[default]
     Dense,
+    /// Native Rust sparse LU solver - O(nnz·fill), no dependencies
+    SparseLu,
+    /// Faer sparse solver - Pure Rust, O(nnz·fill)
+    Faer,
+    /// KLU sparse solver - SuiteSparse C library, fastest
     Klu,
+    /// Automatic selection based on available features
+    Auto,
 }
 
-pub trait LinearSolver {
+pub trait LinearSolver: Send {
+    /// Prepare the solver for a matrix of size n
     fn prepare(&mut self, n: usize);
+
+    /// Analyze the sparsity pattern (can be cached)
     fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError>;
+
+    /// Factorize the matrix
     fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError>;
+
+    /// Solve Ax = b, result overwrites rhs
     fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError>;
+
+    /// Reset cached pattern (call when matrix structure changes)
     fn reset_pattern(&mut self);
+
+    /// Get the solver name for diagnostics
+    fn name(&self) -> &'static str {
+        "Unknown"
+    }
 }
 
-/// 根据 SolverType 创建对应的求解器
+/// Create solver based on explicit type selection
 pub fn create_solver(solver_type: SolverType, n: usize) -> Box<dyn LinearSolver> {
     match solver_type {
         SolverType::Dense => Box::new(DenseSolver::new(n)),
+        SolverType::SparseLu => Box::new(crate::sparse_lu::SparseLuSolver::new(n)),
+        SolverType::Faer => {
+            #[cfg(feature = "faer-solver")]
+            {
+                Box::new(FaerSolver::new(n))
+            }
+            #[cfg(not(feature = "faer-solver"))]
+            {
+                eprintln!("Warning: Faer not available, falling back to SparseLU solver");
+                Box::new(crate::sparse_lu::SparseLuSolver::new(n))
+            }
+        }
         SolverType::Klu => {
             #[cfg(feature = "klu")]
             {
@@ -115,10 +175,55 @@ pub fn create_solver(solver_type: SolverType, n: usize) -> Box<dyn LinearSolver>
             }
             #[cfg(not(feature = "klu"))]
             {
-                eprintln!("Warning: KLU not available, falling back to Dense solver");
-                Box::new(DenseSolver::new(n))
+                eprintln!("Warning: KLU not available, falling back to SparseLU solver");
+                Box::new(crate::sparse_lu::SparseLuSolver::new(n))
             }
         }
+        SolverType::Auto => create_solver_auto(n),
+    }
+}
+
+/// Create the best available solver automatically
+///
+/// Selection priority:
+/// 1. KLU (if `klu` feature enabled) - fastest for circuits
+/// 2. Faer (if `faer-solver` feature enabled) - pure Rust, good performance
+/// 3. Dense - always available, O(n³)
+pub fn create_solver_auto(n: usize) -> Box<dyn LinearSolver> {
+    // Priority 1: KLU (best performance)
+    #[cfg(feature = "klu")]
+    {
+        return Box::new(KluSolver::new(n));
+    }
+
+    // Priority 2: Faer (pure Rust)
+    #[cfg(all(feature = "faer-solver", not(feature = "klu")))]
+    {
+        return Box::new(FaerSolver::new(n));
+    }
+
+    // Priority 3: Dense (fallback)
+    #[cfg(not(any(feature = "klu", feature = "faer-solver")))]
+    {
+        Box::new(DenseSolver::new(n))
+    }
+}
+
+/// Get a description of the solver that would be selected by create_solver_auto
+pub fn describe_solver_selection() -> &'static str {
+    #[cfg(feature = "klu")]
+    {
+        return "KLU (SuiteSparse) - Optimal for circuit simulation";
+    }
+
+    #[cfg(all(feature = "faer-solver", not(feature = "klu")))]
+    {
+        return "Faer (Pure Rust) - Good performance, no C dependencies";
+    }
+
+    #[cfg(not(any(feature = "klu", feature = "faer-solver")))]
+    {
+        "Dense - O(n³), only suitable for small circuits (n < 100)"
     }
 }
 
@@ -247,7 +352,221 @@ impl LinearSolver for DenseSolver {
     }
 
     fn reset_pattern(&mut self) {}
+
+    fn name(&self) -> &'static str {
+        "Dense"
+    }
 }
+
+// ============================================================================
+// Faer Sparse Solver
+// ============================================================================
+
+/// Faer Sparse Solver
+///
+/// Pure Rust sparse LU factorization solver using the faer library.
+/// This is the recommended solver for easy setup as it requires no external
+/// C dependencies.
+///
+/// # Performance Characteristics
+///
+/// - Symbolic analysis: O(nnz)
+/// - Numeric factorization: O(nnz * fill)
+/// - Solve: O(nnz) per right-hand side
+///
+/// # Comparison with KLU
+///
+/// | Aspect | Faer | KLU |
+/// |--------|------|-----|
+/// | Dependencies | Pure Rust | SuiteSparse (C) |
+/// | Performance | Good | Best |
+/// | Setup | Trivial | Requires install |
+/// | Portability | All platforms | Platform-dependent |
+#[cfg(feature = "faer-solver")]
+pub struct FaerSolver {
+    /// Matrix dimension
+    pub n: usize,
+    /// Cached symbolic analysis
+    symbolic: Option<faer::sparse::linalg::solvers::SymbolicLu<usize>>,
+    /// Cached numeric factorization
+    lu: Option<faer::sparse::linalg::solvers::Lu<usize, f64>>,
+    /// Cached column pointers
+    last_ap: Vec<i64>,
+    /// Cached row indices
+    last_ai: Vec<i64>,
+    /// Statistics
+    pub factor_count: usize,
+}
+
+#[cfg(feature = "faer-solver")]
+impl FaerSolver {
+    pub fn new(n: usize) -> Self {
+        Self {
+            n,
+            symbolic: None,
+            lu: None,
+            last_ap: Vec::new(),
+            last_ai: Vec::new(),
+            factor_count: 0,
+        }
+    }
+
+    /// Check if pattern matches cached pattern
+    fn pattern_matches(&self, ap: &[i64], ai: &[i64]) -> bool {
+        self.last_ap == ap && self.last_ai == ai
+    }
+
+    /// Convert CSC arrays to triplet format for faer
+    fn csc_to_triplets(
+        n: usize,
+        ap: &[i64],
+        ai: &[i64],
+        ax: &[f64],
+    ) -> Vec<(usize, usize, f64)> {
+        let mut triplets = Vec::with_capacity(ax.len());
+        for col in 0..n {
+            let start = ap[col] as usize;
+            let end = ap[col + 1] as usize;
+            for idx in start..end {
+                let row = ai[idx] as usize;
+                triplets.push((row, col, ax[idx]));
+            }
+        }
+        triplets
+    }
+}
+
+#[cfg(feature = "faer-solver")]
+impl LinearSolver for FaerSolver {
+    fn prepare(&mut self, n: usize) {
+        if n != self.n {
+            self.reset_pattern();
+            self.n = n;
+        }
+    }
+
+    fn analyze(&mut self, ap: &[i64], ai: &[i64]) -> Result<(), SolverError> {
+        use faer::sparse::SparseColMat;
+        use faer::sparse::linalg::solvers::SymbolicLu;
+
+        // Check if pattern is unchanged
+        if self.symbolic.is_some() && self.pattern_matches(ap, ai) {
+            return Ok(());
+        }
+
+        // Validate input
+        if ap.len() != self.n + 1 {
+            return Err(SolverError::InvalidMatrix {
+                reason: format!(
+                    "Column pointer length {} != expected {}",
+                    ap.len(),
+                    self.n + 1
+                ),
+            });
+        }
+
+        // Create dummy values for symbolic analysis
+        let nnz = ai.len();
+        let dummy_values = vec![1.0f64; nnz];
+
+        // Convert to triplets for faer
+        let triplets = Self::csc_to_triplets(self.n, ap, ai, &dummy_values);
+
+        // Create sparse matrix from triplets
+        let mat = SparseColMat::<usize, f64>::try_new_from_triplets(
+            self.n,
+            self.n,
+            &triplets,
+        )
+        .map_err(|e| SolverError::InvalidMatrix {
+            reason: format!("Failed to create sparse matrix: {:?}", e),
+        })?;
+
+        // Perform symbolic analysis using high-level API
+        let symbolic = SymbolicLu::try_new(mat.symbolic())
+            .map_err(|_| SolverError::AnalyzeFailed)?;
+
+        self.symbolic = Some(symbolic);
+        self.last_ap = ap.to_vec();
+        self.last_ai = ai.to_vec();
+
+        Ok(())
+    }
+
+    fn factor(&mut self, ap: &[i64], ai: &[i64], ax: &[f64]) -> Result<(), SolverError> {
+        use faer::sparse::SparseColMat;
+        use faer::sparse::linalg::solvers::Lu;
+
+        // Ensure symbolic analysis is done
+        if self.symbolic.is_none() || !self.pattern_matches(ap, ai) {
+            self.analyze(ap, ai)?;
+        }
+
+        let symbolic = self.symbolic.clone().ok_or(SolverError::FactorFailed)?;
+
+        // Convert to triplets for faer
+        let triplets = Self::csc_to_triplets(self.n, ap, ai, ax);
+
+        // Create sparse matrix from triplets
+        let mat = SparseColMat::<usize, f64>::try_new_from_triplets(
+            self.n,
+            self.n,
+            &triplets,
+        )
+        .map_err(|e| SolverError::InvalidMatrix {
+            reason: format!("Failed to create sparse matrix: {:?}", e),
+        })?;
+
+        // Perform numeric factorization using high-level API
+        let lu = Lu::try_new_with_symbolic(symbolic, mat.as_ref())
+            .map_err(|_| SolverError::FactorFailed)?;
+
+        self.lu = Some(lu);
+        self.factor_count += 1;
+
+        Ok(())
+    }
+
+    fn solve(&mut self, rhs: &mut [f64]) -> Result<(), SolverError> {
+        use faer::prelude::SpSolver;
+        use faer::Mat;
+
+        let lu = self.lu.as_ref().ok_or(SolverError::SolveFailed)?;
+
+        if rhs.len() != self.n {
+            return Err(SolverError::InvalidMatrix {
+                reason: format!("RHS length {} != matrix dimension {}", rhs.len(), self.n),
+            });
+        }
+
+        // Create a column matrix from rhs
+        let b = Mat::from_fn(self.n, 1, |i, _| rhs[i]);
+
+        // Solve the system
+        let x = lu.solve(&b);
+
+        // Copy result back to rhs
+        for i in 0..self.n {
+            rhs[i] = x[(i, 0)];
+        }
+
+        Ok(())
+    }
+
+    fn reset_pattern(&mut self) {
+        self.symbolic = None;
+        self.lu = None;
+        self.last_ap.clear();
+        self.last_ai.clear();
+    }
+
+    fn name(&self) -> &'static str {
+        "Faer"
+    }
+}
+
+#[cfg(feature = "faer-solver")]
+unsafe impl Send for FaerSolver {}
 
 /// KLU Sparse Solver
 ///
@@ -666,6 +985,10 @@ impl LinearSolver for KluSolver {
         }
         self.last_ap.clear();
         self.last_ai.clear();
+    }
+
+    fn name(&self) -> &'static str {
+        "KLU"
     }
 }
 
