@@ -187,30 +187,356 @@ pub fn create_solver(solver_type: SolverType, n: usize) -> Box<dyn LinearSolver>
     }
 }
 
-/// Create the best available solver automatically
+/// Create the best available solver automatically (size-based heuristic)
 ///
-/// Selection priority:
-/// 1. KLU (if `klu` feature enabled) - fastest for circuits
-/// 2. Faer (if `faer-solver` feature enabled) - pure Rust, good performance
-/// 3. Dense - always available, O(n³)
+/// This is a simple size-based selection. For smarter selection based on
+/// matrix properties, use `SolverSelector::select()` after analyzing the matrix.
+///
+/// # Selection Rules (by size)
+///
+/// | Size | KLU available | Faer available | Neither |
+/// |------|---------------|----------------|---------|
+/// | n ≤ 50 | Dense | Dense | Dense |
+/// | 50 < n ≤ 500 | KLU | Faer | SparseLU |
+/// | n > 500 | KLU | Faer | SparseLU-BTF |
+///
 pub fn create_solver_auto(n: usize) -> Box<dyn LinearSolver> {
-    // Priority 1: KLU (best performance)
+    // Small matrices: Dense is fast and has low overhead
+    if n <= 50 {
+        return Box::new(DenseSolver::new(n));
+    }
+
+    // Medium to large matrices: use best available sparse solver
     #[cfg(feature = "klu")]
     {
         return Box::new(KluSolver::new(n));
     }
 
-    // Priority 2: Faer (pure Rust)
     #[cfg(all(feature = "faer-solver", not(feature = "klu")))]
     {
         return Box::new(FaerSolver::new(n));
     }
 
-    // Priority 3: Dense (fallback)
+    // No external solvers: use native SparseLU
     #[cfg(not(any(feature = "klu", feature = "faer-solver")))]
     {
-        Box::new(DenseSolver::new(n))
+        if n > 500 {
+            // Large matrices benefit from BTF
+            Box::new(crate::sparse_lu_btf::SparseLuBtfSolver::new(n))
+        } else {
+            Box::new(crate::sparse_lu::SparseLuSolver::new(n))
+        }
     }
+}
+
+/// Matrix properties used for solver selection
+#[derive(Debug, Clone)]
+pub struct MatrixProperties {
+    /// Matrix dimension
+    pub n: usize,
+    /// Number of nonzeros
+    pub nnz: usize,
+    /// Sparsity ratio: nnz / n² (0.0 = empty, 1.0 = dense)
+    pub density: f64,
+    /// Average entries per row/column
+    pub avg_degree: f64,
+    /// Whether the matrix has block structure (from BTF analysis)
+    pub has_block_structure: bool,
+    /// Number of BTF blocks (1 = no useful block structure)
+    pub num_blocks: usize,
+    /// Largest block size (as fraction of n)
+    pub max_block_ratio: f64,
+}
+
+impl MatrixProperties {
+    /// Analyze matrix properties from CSC format
+    ///
+    /// # Arguments
+    /// * `n` - Matrix dimension
+    /// * `ap` - Column pointers (length n+1)
+    /// * `ai` - Row indices
+    ///
+    /// # Example
+    /// ```ignore
+    /// let props = MatrixProperties::analyze(n, &ap, &ai);
+    /// println!("Density: {:.2}%", props.density * 100.0);
+    /// ```
+    pub fn analyze(n: usize, ap: &[i64], ai: &[i64]) -> Self {
+        if n == 0 {
+            return Self {
+                n: 0,
+                nnz: 0,
+                density: 0.0,
+                avg_degree: 0.0,
+                has_block_structure: false,
+                num_blocks: 0,
+                max_block_ratio: 0.0,
+            };
+        }
+
+        let nnz = ap[n] as usize;
+        let density = nnz as f64 / (n * n) as f64;
+        let avg_degree = nnz as f64 / n as f64;
+
+        // Analyze block structure using BTF
+        let btf = crate::btf::btf_decompose(n, ap, ai);
+        let has_block_structure = btf.num_blocks > 1 && btf.max_block_size < n;
+        let max_block_ratio = btf.max_block_size as f64 / n as f64;
+
+        Self {
+            n,
+            nnz,
+            density,
+            avg_degree,
+            has_block_structure,
+            num_blocks: btf.num_blocks,
+            max_block_ratio,
+        }
+    }
+
+    /// Quick analysis without BTF (faster, less accurate)
+    pub fn analyze_quick(n: usize, ap: &[i64], _ai: &[i64]) -> Self {
+        if n == 0 {
+            return Self {
+                n: 0,
+                nnz: 0,
+                density: 0.0,
+                avg_degree: 0.0,
+                has_block_structure: false,
+                num_blocks: 1,
+                max_block_ratio: 1.0,
+            };
+        }
+
+        let nnz = ap[n] as usize;
+        let density = nnz as f64 / (n * n) as f64;
+        let avg_degree = nnz as f64 / n as f64;
+
+        Self {
+            n,
+            nnz,
+            density,
+            avg_degree,
+            has_block_structure: false,  // Unknown without BTF
+            num_blocks: 1,
+            max_block_ratio: 1.0,
+        }
+    }
+}
+
+/// Intelligent solver selector based on matrix properties
+///
+/// This selector analyzes matrix characteristics and chooses the most
+/// appropriate solver based on:
+///
+/// # Selection Criteria
+///
+/// ## 1. Matrix Size
+/// - **n ≤ 50**: Dense solver (low overhead, O(n³) is acceptable)
+/// - **50 < n ≤ 200**: Sparse solvers start to win
+/// - **n > 200**: Sparse solvers essential
+///
+/// ## 2. Sparsity (density = nnz/n²)
+/// - **density > 0.3 (30%)**: Matrix is "dense", use Dense solver up to n=200
+/// - **density < 0.1 (10%)**: Typical sparse matrix, use sparse solvers
+/// - **density < 0.01 (1%)**: Very sparse, BTF may help
+///
+/// ## 3. Block Structure
+/// - **Multiple BTF blocks**: SparseLU-BTF provides speedup proportional to k²
+///   where k is the number of blocks
+/// - **Single block**: Regular sparse solver
+/// - **Many 1×1 blocks**: Nearly triangular, BTF very beneficial
+///
+/// ## 4. Available Solvers
+/// - **KLU**: Best performance, use for large matrices if available
+/// - **Faer**: Good pure-Rust alternative
+/// - **SparseLU-BTF**: Best native option for block-structured matrices
+/// - **SparseLU**: Best native option for general sparse matrices
+/// - **Dense**: Fallback for small/dense matrices
+///
+/// # Decision Tree
+///
+/// ```text
+///                         n ≤ 50?
+///                        /      \
+///                      Yes       No
+///                       |         |
+///                    Dense    density > 0.3 && n ≤ 200?
+///                             /                    \
+///                           Yes                     No
+///                            |                       |
+///                         Dense              KLU available?
+///                                           /            \
+///                                         Yes             No
+///                                          |               |
+///                                        KLU        Faer available?
+///                                                  /            \
+///                                                Yes             No
+///                                                 |               |
+///                                               Faer      has_block_structure?
+///                                                        /              \
+///                                                      Yes               No
+///                                                       |                 |
+///                                               SparseLU-BTF         SparseLU
+/// ```
+#[derive(Debug, Clone)]
+pub struct SolverSelector {
+    /// Matrix properties
+    pub properties: MatrixProperties,
+    /// Selected solver type
+    pub selected: SolverType,
+    /// Reason for selection
+    pub reason: String,
+}
+
+impl SolverSelector {
+    /// Analyze matrix and select the best solver
+    ///
+    /// Performs full BTF analysis to detect block structure.
+    pub fn select(n: usize, ap: &[i64], ai: &[i64]) -> Self {
+        let properties = MatrixProperties::analyze(n, ap, ai);
+        Self::select_from_properties(properties)
+    }
+
+    /// Quick selection without BTF analysis
+    ///
+    /// Faster but may miss opportunities to use SparseLU-BTF.
+    pub fn select_quick(n: usize, ap: &[i64], ai: &[i64]) -> Self {
+        let properties = MatrixProperties::analyze_quick(n, ap, ai);
+        Self::select_from_properties(properties)
+    }
+
+    /// Select solver based on pre-computed properties
+    pub fn select_from_properties(properties: MatrixProperties) -> Self {
+        let n = properties.n;
+        let density = properties.density;
+
+        // Rule 1: Very small matrices -> Dense
+        if n <= 50 {
+            return Self {
+                properties,
+                selected: SolverType::Dense,
+                reason: format!("Small matrix (n={}) - Dense solver has lowest overhead", n),
+            };
+        }
+
+        // Rule 2: Dense matrices up to moderate size -> Dense
+        if density > 0.3 && n <= 200 {
+            return Self {
+                properties,
+                selected: SolverType::Dense,
+                reason: format!(
+                    "Dense matrix ({:.1}% fill, n={}) - Dense solver efficient",
+                    density * 100.0, n
+                ),
+            };
+        }
+
+        // Rule 3: KLU if available (best performance for large sparse)
+        #[cfg(feature = "klu")]
+        {
+            return Self {
+                properties,
+                selected: SolverType::Klu,
+                reason: format!(
+                    "Large sparse matrix (n={}, {:.1}% fill) - KLU optimal",
+                    n, density * 100.0
+                ),
+            };
+        }
+
+        // Rule 4: Faer if available
+        #[cfg(all(feature = "faer-solver", not(feature = "klu")))]
+        {
+            return Self {
+                properties,
+                selected: SolverType::Faer,
+                reason: format!(
+                    "Sparse matrix (n={}, {:.1}% fill) - Faer selected",
+                    n, density * 100.0
+                ),
+            };
+        }
+
+        // Rule 5: Native solvers - choose based on structure
+        #[cfg(not(any(feature = "klu", feature = "faer-solver")))]
+        {
+            if properties.has_block_structure && properties.num_blocks > 1 {
+                let speedup_est = (properties.num_blocks as f64).powi(2) /
+                    (1.0 + properties.max_block_ratio.powi(3) * (properties.num_blocks as f64));
+                Self {
+                    selected: SolverType::SparseLuBtf,
+                    reason: format!(
+                        "Block structure detected ({} blocks, max {:.0}% of n) - \
+                         SparseLU-BTF ~{:.1}x faster",
+                        properties.num_blocks,
+                        properties.max_block_ratio * 100.0,
+                        speedup_est.max(1.0)
+                    ),
+                    properties,
+                }
+            } else if n > 500 {
+                // Large matrix without clear block structure - try BTF anyway
+                Self {
+                    properties,
+                    selected: SolverType::SparseLuBtf,
+                    reason: format!(
+                        "Large matrix (n={}) - SparseLU-BTF may find hidden structure",
+                        n
+                    ),
+                }
+            } else {
+                Self {
+                    properties,
+                    selected: SolverType::SparseLu,
+                    reason: format!(
+                        "Medium sparse matrix (n={}, {:.1}% fill) - SparseLU selected",
+                        n, density * 100.0
+                    ),
+                }
+            }
+        }
+    }
+
+    /// Create the selected solver
+    pub fn create_solver(&self) -> Box<dyn LinearSolver> {
+        create_solver(self.selected, self.properties.n)
+    }
+}
+
+/// Create solver with automatic selection based on matrix properties
+///
+/// This is the recommended way to create a solver when you have the matrix
+/// structure available. It performs BTF analysis to detect block structure.
+///
+/// # Arguments
+/// * `n` - Matrix dimension
+/// * `ap` - Column pointers (CSC format)
+/// * `ai` - Row indices (CSC format)
+///
+/// # Returns
+/// A boxed solver optimized for the given matrix structure
+///
+/// # Example
+/// ```ignore
+/// use sim_core::solver::create_solver_for_matrix;
+///
+/// let solver = create_solver_for_matrix(n, &ap, &ai);
+/// solver.analyze(&ap, &ai)?;
+/// solver.factor(&ap, &ai, &ax)?;
+/// solver.solve(&mut rhs)?;
+/// ```
+pub fn create_solver_for_matrix(n: usize, ap: &[i64], ai: &[i64]) -> Box<dyn LinearSolver> {
+    let selector = SolverSelector::select(n, ap, ai);
+    selector.create_solver()
+}
+
+/// Create solver with quick automatic selection (no BTF analysis)
+///
+/// Faster than `create_solver_for_matrix` but may not detect block structure.
+pub fn create_solver_for_matrix_quick(n: usize, ap: &[i64], ai: &[i64]) -> Box<dyn LinearSolver> {
+    let selector = SolverSelector::select_quick(n, ap, ai);
+    selector.create_solver()
 }
 
 /// Get a description of the solver that would be selected by create_solver_auto
@@ -227,7 +553,7 @@ pub fn describe_solver_selection() -> &'static str {
 
     #[cfg(not(any(feature = "klu", feature = "faer-solver")))]
     {
-        "Dense - O(n³), only suitable for small circuits (n < 100)"
+        "SparseLU/SparseLU-BTF (Native Rust) - No external dependencies"
     }
 }
 

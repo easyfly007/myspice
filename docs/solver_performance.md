@@ -576,11 +576,75 @@ for iter in 1..max_newton {
 
 ---
 
+## Automatic Solver Selection
+
+MySpice includes intelligent automatic solver selection based on matrix properties.
+
+### Selection Criteria
+
+The `SolverSelector` analyzes the following matrix properties:
+
+| Property | How It's Used |
+|----------|---------------|
+| **Size (n)** | Small matrices (n ≤ 50) use Dense; larger use sparse |
+| **Density (nnz/n²)** | Dense matrices (>30% fill) may use Dense up to n=200 |
+| **Block Structure** | Detected via BTF; enables SparseLU-BTF for speedup |
+| **Average Degree** | High degree matrices benefit from advanced solvers |
+
+### Decision Tree
+
+```
+                    n ≤ 50?
+                   /      \
+                 Yes       No
+                  |         |
+               Dense    density > 30% && n ≤ 200?
+                        /                    \
+                      Yes                     No
+                       |                       |
+                    Dense              KLU available?
+                                      /            \
+                                    Yes             No
+                                     |               |
+                                   KLU        Faer available?
+                                             /            \
+                                           Yes             No
+                                            |               |
+                                          Faer      block structure?
+                                                   /              \
+                                                 Yes               No
+                                                  |                 |
+                                          SparseLU-BTF         SparseLU
+```
+
+### Usage
+
+```rust
+use sim_core::solver::{create_solver_for_matrix, SolverSelector};
+
+// Automatic selection (recommended)
+let solver = create_solver_for_matrix(n, &ap, &ai);
+
+// Or get selection details
+let selector = SolverSelector::select(n, &ap, &ai);
+println!("Selected: {:?}", selector.selected);
+println!("Reason: {}", selector.reason);
+let solver = selector.create_solver();
+```
+
+### Quick vs Full Analysis
+
+- **Full analysis** (`SolverSelector::select`): Includes BTF decomposition to detect block structure
+- **Quick analysis** (`SolverSelector::select_quick`): Faster but may miss block structure opportunities
+
+---
+
 ## Future Improvements
 
 - [x] Native Rust sparse LU solver (SparseLU) - no external dependencies
 - [x] BTF (Block Triangular Form) decomposition for SparseLU
 - [x] Full AMD algorithm with quotient graph for SparseLU (see [AMD Algorithm](amd_algorithm.md))
+- [x] Automatic solver selection based on matrix properties
 - [ ] Iterative solvers (GMRES, BiCGSTAB) for very large circuits
 - [ ] GPU-accelerated solvers (cuSPARSE)
 - [ ] Parallel direct solvers (PARDISO, SuperLU_MT)

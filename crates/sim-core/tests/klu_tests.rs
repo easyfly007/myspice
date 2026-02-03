@@ -646,11 +646,16 @@ mod faer_tests {
 
     #[test]
     fn test_create_solver_auto_selects_faer() {
-        // When only faer-solver is enabled (not klu), should select Faer
-        let solver = create_solver_auto(10);
+        // When only faer-solver is enabled (not klu), should select Faer for large matrices
+        // Small matrices (n <= 50) use Dense for lower overhead
+        let solver_small = create_solver_auto(10);
+        assert_eq!(solver_small.name(), "Dense", "Small matrices should use Dense");
+
+        // Large matrices should use Faer (when klu not available)
+        let solver_large = create_solver_auto(100);
         #[cfg(not(feature = "klu"))]
         {
-            assert_eq!(solver.name(), "Faer");
+            assert_eq!(solver_large.name(), "Faer", "Large matrices should use Faer");
         }
     }
 
