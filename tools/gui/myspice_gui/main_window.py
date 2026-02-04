@@ -559,6 +559,7 @@ C1 out 0 100n
         # Cursor position updates
         waveform = self._viewer_panel.get_waveform_viewer()
         waveform.cursor_moved.connect(self._on_waveform_cursor_moved)
+        waveform.cursor_add_requested.connect(self._on_cursor_add_requested)
 
         # Simulation panel connections
         self._sim_panel.run_requested.connect(self._on_simulation_requested)
@@ -683,6 +684,27 @@ C1 out 0 100n
         """Handle cursor movement in waveform viewer."""
         # Update cursor panel readout
         self._cursor_panel.refresh()
+
+    @Slot(float)
+    def _on_cursor_add_requested(self, x_position: float):
+        """Handle request to add cursor at position (from double-click or context menu)."""
+        # Determine cursor name (C1 if not exists, otherwise C2)
+        existing = self._cursor_manager.get_cursor_names()
+        if "C1" not in existing:
+            name = "C1"
+        elif "C2" not in existing:
+            name = "C2"
+        else:
+            # Both cursors exist, move C1 to new position
+            self._cursor_manager.set_cursor_position("C1", x_position)
+            self._cursor_panel.refresh()
+            self._console.info(f"Moved cursor C1 to {x_position:.4g}")
+            return
+
+        self._cursor_manager.add_cursor(name, x_position)
+        self._cursor_panel.refresh()
+        self._cursor_dock.raise_()
+        self._console.info(f"Added cursor {name} at {x_position:.4g}")
 
     @Slot(int, int)
     def _on_cursor_position_changed(self, line: int, column: int):

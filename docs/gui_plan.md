@@ -410,7 +410,7 @@ HIGHLIGHT_RULES = [
 | TRAN | TStep, TStop, TStart (optional), TMax (optional) |
 | AC | Sweep (DEC/OCT/LIN), Points, FStart, FStop |
 
-### Phase 4: Waveform Viewer (Week 4)
+### Phase 4: Waveform Viewer (Week 4) ✅
 
 **Goals:**
 - Interactive waveform display
@@ -418,11 +418,37 @@ HIGHLIGHT_RULES = [
 - Basic measurements
 
 **Deliverables:**
-- [ ] WaveformViewer widget (pyqtgraph-based)
-- [ ] Signal list with checkboxes
-- [ ] Zoom/pan controls
-- [ ] Auto-scale button
-- [ ] Export to PNG
+- [x] WaveformViewer widget (pyqtgraph-based)
+- [x] Signal list with checkboxes
+- [x] Zoom/pan controls
+- [x] Auto-scale button
+- [x] Export to PNG
+
+**Implementation Notes (2026-02-04):**
+- Created `myspice_gui/viewer/waveform.py`: WaveformViewer with:
+  - Multi-signal plotting with automatic color assignment
+  - pyqtgraph-based interactive plot
+  - Auto-scale and reset view buttons
+  - Grid toggle
+  - Export to PNG/SVG
+  - Context menu (right-click) with Reset Zoom, Auto Scale, Add Cursor, Toggle Grid, Export options
+  - Double-click to add measurement cursor
+  - CSV data export
+- Created `myspice_gui/viewer/signal_list.py`: SignalListWidget with:
+  - Visibility checkboxes for each signal
+  - Color picker buttons
+  - Show All / Hide All buttons
+  - Remove signal buttons
+- Created `myspice_gui/viewer/bode.py`: BodePlot with:
+  - Magnitude (dB) and Phase (degrees) dual plots
+  - Logarithmic frequency axis
+  - Linked X-axes
+  - Context menu with export options
+  - CSV data export
+- Created `myspice_gui/viewer/cursors.py`: CursorManager with:
+  - Draggable vertical cursors
+  - Delta measurement display
+  - Frequency (1/Δ) calculation
 
 **Interaction:**
 - Mouse wheel: Zoom

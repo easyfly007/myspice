@@ -19,8 +19,10 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSplitter,
     QFileDialog,
+    QMenu,
 )
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QAction
 
 import pyqtgraph as pg
 
@@ -136,8 +138,60 @@ class BodePlot(QWidget):
         # Link X axes
         self._phase_plot.setXLink(self._mag_plot)
 
+        # Setup context menus for both plots
+        self._setup_context_menu(self._mag_plot)
+        self._setup_context_menu(self._phase_plot)
+
         splitter.setSizes([300, 300])
         layout.addWidget(splitter)
+
+    def _setup_context_menu(self, plot_widget: pg.PlotWidget):
+        """Set up the right-click context menu for a plot widget."""
+        plot_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        plot_widget.customContextMenuRequested.connect(
+            lambda pos, pw=plot_widget: self._show_context_menu(pos, pw)
+        )
+
+    def _show_context_menu(self, pos, plot_widget: pg.PlotWidget):
+        """Show context menu at the given position."""
+        menu = QMenu(self)
+
+        # Reset Zoom action
+        reset_zoom_action = QAction("Reset Zoom", self)
+        reset_zoom_action.triggered.connect(self.auto_scale)
+        menu.addAction(reset_zoom_action)
+
+        menu.addSeparator()
+
+        # Toggle Grid action
+        toggle_grid_action = QAction("Toggle Grid", self)
+        toggle_grid_action.setCheckable(True)
+        toggle_grid_action.setChecked(self._grid_btn.isChecked())
+        toggle_grid_action.triggered.connect(self._grid_btn.click)
+        menu.addAction(toggle_grid_action)
+
+        menu.addSeparator()
+
+        # Export submenu
+        export_menu = menu.addMenu("Export")
+
+        export_png_action = QAction("Export as PNG...", self)
+        export_png_action.triggered.connect(self._export_image)
+        export_menu.addAction(export_png_action)
+
+        export_csv_action = QAction("Export Data as CSV...", self)
+        export_csv_action.triggered.connect(self._export_csv)
+        export_menu.addAction(export_csv_action)
+
+        menu.addSeparator()
+
+        # Clear All action
+        clear_action = QAction("Clear All Signals", self)
+        clear_action.triggered.connect(self.clear)
+        menu.addAction(clear_action)
+
+        # Show the menu
+        menu.exec_(plot_widget.mapToGlobal(pos))
 
     def add_signal(
         self,
@@ -260,6 +314,46 @@ class BodePlot(QWidget):
             exporter = pg.exporters.ImageExporter(self._phase_plot.plotItem)
             phase_path = path.replace('.png', '_phase.png')
             exporter.export(phase_path)
+
+    def _export_csv(self):
+        """Export AC signal data to CSV file."""
+        if not self._signals:
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Bode Data as CSV",
+            "bode_data.csv",
+            "CSV Files (*.csv);;All Files (*)"
+        )
+        if path:
+            try:
+                with open(path, 'w') as f:
+                    # Write header
+                    signal_names = list(self._signals.keys())
+                    header_parts = ["Frequency (Hz)"]
+                    for name in signal_names:
+                        header_parts.append(f"{name} Magnitude (dB)")
+                        header_parts.append(f"{name} Phase (deg)")
+                    f.write(",".join(header_parts) + "\n")
+
+                    # Get all frequency values (use first signal's freq data as reference)
+                    first_signal = list(self._signals.values())[0]
+                    frequencies = first_signal.frequencies
+
+                    # Write data rows
+                    for i, freq in enumerate(frequencies):
+                        row = [str(freq)]
+                        for name in signal_names:
+                            sig = self._signals[name]
+                            if i < len(sig.magnitude_db):
+                                row.append(str(sig.magnitude_db[i]))
+                                row.append(str(sig.phase_deg[i]))
+                            else:
+                                row.append("")
+                                row.append("")
+                        f.write(",".join(row) + "\n")
+            except Exception as e:
+                print(f"Error exporting CSV: {e}")
 
     def get_magnitude_plot(self) -> pg.PlotWidget:
         """Get the magnitude PlotWidget."""
