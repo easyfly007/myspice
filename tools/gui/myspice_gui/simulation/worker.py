@@ -57,7 +57,7 @@ class SimulationWorker(QThread):
     simulation_started = Signal(str)  # analysis type
     progress = Signal(str)  # progress message
     finished = Signal(object)  # RunResult
-    error = Signal(str, list)  # error message, details
+    error = Signal(str, list, str)  # error message, details, error code
     stopped = Signal()
 
     def __init__(self, client: MySpiceClient, parent: Optional[QObject] = None):
@@ -91,7 +91,7 @@ class SimulationWorker(QThread):
     def run(self):
         """Execute the simulation in the worker thread."""
         if self._task is None:
-            self.error.emit("No simulation task set", [])
+            self.error.emit("No simulation task set", [], "")
             return
 
         # Create new event loop for this thread
@@ -111,9 +111,9 @@ class SimulationWorker(QThread):
                 self.finished.emit(result)
 
         except ClientError as e:
-            self.error.emit(str(e), e.details or [])
+            self.error.emit(str(e), e.details or [], e.code or "")
         except Exception as e:
-            self.error.emit(str(e), [])
+            self.error.emit(str(e), [], "")
         finally:
             self._loop.close()
             self._loop = None

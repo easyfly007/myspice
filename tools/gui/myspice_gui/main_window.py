@@ -10,6 +10,7 @@ Provides the main window with dockable panels for:
 """
 
 import cmath
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -871,6 +872,8 @@ C1 out 0 100n
 
     def _start_simulation(self, analysis: str, params: dict):
         """Start a simulation in background thread."""
+        self._editor.clear_error_markers()
+
         netlist = self._editor.toPlainText()
         if not netlist.strip():
             self._console.warning("No netlist to simulate")
@@ -965,8 +968,8 @@ C1 out 0 100n
 
         self._statusbar.showMessage(f"{analysis} completed", 5000)
 
-    @Slot(str, list)
-    def _on_simulation_error(self, message: str, details: list):
+    @Slot(str, list, str)
+    def _on_simulation_error(self, message: str, details: list, code: str):
         """Handle simulation error."""
         # Reset UI state
         self._sim_panel.set_running(False)
@@ -976,8 +979,33 @@ C1 out 0 100n
         for detail in details:
             self._console.error(f"  - {detail}")
 
+        # Mark error lines in the editor for parse errors
+        if code == "PARSE_ERROR" and details:
+            markers = self._parse_error_lines(details)
+            if markers:
+                self._editor.set_error_markers(markers)
+                first_line = min(markers)
+                self._editor.go_to_line(first_line)
+
         self._sim_panel.set_status(message, is_error=True)
         self._statusbar.showMessage("Simulation failed", 5000)
+
+    @staticmethod
+    def _parse_error_lines(details: list) -> dict[int, str]:
+        """Parse error details to extract line numbers and messages.
+
+        Expects details in the format ``"line N: message"``.
+
+        Returns:
+            Mapping of ``{line_number: error_message}``.
+        """
+        pattern = re.compile(r"^line\s+(\d+):\s*(.+)", re.IGNORECASE)
+        markers: dict[int, str] = {}
+        for detail in details:
+            m = pattern.match(detail)
+            if m:
+                markers[int(m.group(1))] = m.group(2)
+        return markers
 
     @Slot()
     def _on_simulation_stopped(self):

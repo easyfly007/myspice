@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QLabel,
+    QToolTip,
 )
 from PySide6.QtGui import (
     QColor,
@@ -29,8 +30,10 @@ from PySide6.QtGui import (
     QTextCursor,
     QPaintEvent,
     QResizeEvent,
+    QBrush,
+    QPen,
 )
-from PySide6.QtCore import Qt, QRect, QSize, Signal, Slot
+from PySide6.QtCore import Qt, QRect, QSize, QEvent, QPoint, Signal, Slot
 
 from .highlighter import SpiceHighlighter
 from .completer import SpiceCompleter, get_completion_prefix
@@ -91,16 +94,20 @@ class NetlistEditor(QPlainTextEdit):
         self._completer.setWidget(self)
         self._completer.activated.connect(self._insert_completion)
 
+        # Error markers: {line_number: error_message}
+        self._error_markers: dict[int, str] = {}
+
         # Connect signals
         self.blockCountChanged.connect(self._update_line_number_area_width)
         self.updateRequest.connect(self._update_line_number_area)
-        self.cursorPositionChanged.connect(self._highlight_current_line)
+        self.cursorPositionChanged.connect(self._update_extra_selections)
         self.cursorPositionChanged.connect(self._emit_cursor_position)
         self.textChanged.connect(self._on_text_changed)
+        self.textChanged.connect(self.clear_error_markers)
 
         # Initialize
         self._update_line_number_area_width(0)
-        self._highlight_current_line()
+        self._update_extra_selections()
 
         # Set placeholder
         self.setPlaceholderText("Enter SPICE netlist here...")
@@ -181,7 +188,7 @@ class NetlistEditor(QPlainTextEdit):
         )
 
     def line_number_area_paint_event(self, event: QPaintEvent):
-        """Paint the line numbers."""
+        """Paint the line numbers and error indicators."""
         painter = QPainter(self._line_number_area)
         painter.fillRect(event.rect(), QColor("#F0F0F0"))
 
@@ -191,18 +198,30 @@ class NetlistEditor(QPlainTextEdit):
             self.contentOffset()).top())
         bottom = top + int(self.blockBoundingRect(block).height())
 
-        # Line number text color
-        painter.setPen(QColor("#999999"))
-
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
-                number = str(block_number + 1)
+                line_num = block_number + 1
+
+                # Draw error indicator (red circle) for error lines
+                if line_num in self._error_markers:
+                    diameter = 8
+                    x = 2
+                    y = top + (self.fontMetrics().height() - diameter) // 2
+                    painter.save()
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    painter.setBrush(QBrush(QColor("#E03030")))
+                    painter.setPen(QPen(Qt.PenStyle.NoPen))
+                    painter.drawEllipse(x, y, diameter, diameter)
+                    painter.restore()
+
+                # Draw line number
+                painter.setPen(QColor("#999999"))
                 painter.drawText(
                     0, top,
                     self._line_number_area.width() - 5,
                     self.fontMetrics().height(),
                     Qt.AlignmentFlag.AlignRight,
-                    number
+                    str(line_num)
                 )
 
             block = block.next()
@@ -211,13 +230,14 @@ class NetlistEditor(QPlainTextEdit):
             block_number += 1
 
     # =========================================================================
-    # Current Line Highlighting
+    # Current Line & Error Highlighting
     # =========================================================================
 
-    def _highlight_current_line(self):
-        """Highlight the current line."""
+    def _update_extra_selections(self):
+        """Update all extra selections (current line highlight + error markers)."""
         extra_selections = []
 
+        # Current line highlight
         if not self.isReadOnly():
             selection = QTextEdit.ExtraSelection()
             selection.format.setBackground(self._current_line_color)
@@ -228,7 +248,38 @@ class NetlistEditor(QPlainTextEdit):
             selection.cursor.clearSelection()
             extra_selections.append(selection)
 
+        # Error line highlights
+        error_color = QColor("#FFDEDE")
+        for line_num in self._error_markers:
+            block = self.document().findBlockByLineNumber(line_num - 1)
+            if block.isValid():
+                selection = QTextEdit.ExtraSelection()
+                selection.format.setBackground(error_color)
+                selection.format.setProperty(
+                    QTextFormat.Property.FullWidthSelection, True
+                )
+                selection.cursor = QTextCursor(block)
+                selection.cursor.clearSelection()
+                extra_selections.append(selection)
+
         self.setExtraSelections(extra_selections)
+
+    def set_error_markers(self, markers: dict[int, str]):
+        """Set error markers on specific lines.
+
+        Args:
+            markers: Mapping of {line_number: error_message}.
+        """
+        self._error_markers = dict(markers)
+        self._update_extra_selections()
+        self._line_number_area.update()
+
+    def clear_error_markers(self):
+        """Clear all error markers."""
+        if self._error_markers:
+            self._error_markers.clear()
+            self._update_extra_selections()
+            self._line_number_area.update()
 
     # =========================================================================
     # Cursor Position
@@ -252,6 +303,20 @@ class NetlistEditor(QPlainTextEdit):
         cursor = QTextCursor(block)
         self.setTextCursor(cursor)
         self.centerCursor()
+
+    def event(self, event: QEvent) -> bool:
+        """Show tooltip for error markers on hover."""
+        if event.type() == QEvent.Type.ToolTip:
+            pos = event.pos()
+            cursor = self.cursorForPosition(pos)
+            line_num = cursor.blockNumber() + 1
+            message = self._error_markers.get(line_num)
+            if message:
+                QToolTip.showText(event.globalPos(), f"Error: {message}")
+            else:
+                QToolTip.hideText()
+            return True
+        return super().event(event)
 
     # =========================================================================
     # Auto-completion
