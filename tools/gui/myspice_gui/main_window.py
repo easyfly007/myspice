@@ -46,7 +46,7 @@ from PySide6.QtCore import Qt, QTimer, Slot
 from .client import MySpiceClient, RunResult, AnalysisType, AcSweepType, ClientError
 from .console import ConsoleWidget
 from .editor import NetlistEditor
-from .viewer import WaveformViewer, BodePlot, SignalListWidget, CursorManager, ResultsTable
+from .viewer import WaveformViewer, BodePlot, FftViewer, SignalListWidget, CursorManager, ResultsTable
 from .viewer.cursors import CursorControlPanel
 from .simulation import SimulationPanel, SimulationWorker, SimulationTask
 from .simulation.worker import AnalysisType as SimAnalysisType, ConnectionChecker
@@ -239,6 +239,10 @@ class ViewerPanel(QWidget):
         self._bode = BodePlot()
         self._tabs.addTab(self._bode, "Bode")
 
+        # FFT viewer for transient frequency analysis
+        self._fft = FftViewer()
+        self._tabs.addTab(self._fft, "FFT")
+
     def get_waveform_viewer(self) -> WaveformViewer:
         """Get the waveform viewer widget."""
         return self._waveform
@@ -246,6 +250,10 @@ class ViewerPanel(QWidget):
     def get_bode_plot(self) -> BodePlot:
         """Get the Bode plot widget."""
         return self._bode
+
+    def get_fft_viewer(self) -> FftViewer:
+        """Get the FFT viewer widget."""
+        return self._fft
 
     def show_waveform_tab(self):
         """Switch to waveform tab."""
@@ -255,10 +263,15 @@ class ViewerPanel(QWidget):
         """Switch to Bode plot tab."""
         self._tabs.setCurrentIndex(1)
 
+    def show_fft_tab(self):
+        """Switch to FFT tab."""
+        self._tabs.setCurrentIndex(2)
+
     def clear_all(self):
         """Clear all viewers."""
         self._waveform.clear()
         self._bode.clear()
+        self._fft.clear()
 
 
 class MainWindow(QMainWindow):
@@ -609,6 +622,10 @@ C1 out 0 100n
         bode.get_magnitude_plot().setBackground(bg)
         bode.get_phase_plot().setBackground(bg)
 
+        # Update FFT plot
+        fft = self._viewer_panel.get_fft_viewer()
+        fft.get_plot_widget().setBackground(bg)
+
     def _apply_initial_theme(self):
         """Apply the saved theme on startup."""
         theme_manager.load_saved_theme()
@@ -662,22 +679,28 @@ C1 out 0 100n
         """Handle signal visibility change."""
         waveform = self._viewer_panel.get_waveform_viewer()
         bode = self._viewer_panel.get_bode_plot()
+        fft = self._viewer_panel.get_fft_viewer()
         waveform.set_signal_visible(name, visible)
         bode.set_signal_visible(name, visible)
+        fft.set_signal_visible(name, visible)
 
     @Slot(str, str)
     def _on_signal_color_changed(self, name: str, color: str):
         """Handle signal color change."""
         waveform = self._viewer_panel.get_waveform_viewer()
+        fft = self._viewer_panel.get_fft_viewer()
         waveform.set_signal_color(name, color)
+        fft.set_signal_color(name, color)
 
     @Slot(str)
     def _on_signal_removed(self, name: str):
         """Handle signal removal."""
         waveform = self._viewer_panel.get_waveform_viewer()
         bode = self._viewer_panel.get_bode_plot()
+        fft = self._viewer_panel.get_fft_viewer()
         waveform.remove_signal(name)
         bode.remove_signal(name)
+        fft.remove_signal(name)
 
     @Slot(float, float)
     def _on_waveform_cursor_moved(self, x: float, y: float):
@@ -1014,9 +1037,11 @@ C1 out 0 100n
         self._signal_dock.raise_()
 
     def _plot_tran_results(self, result: RunResult):
-        """Plot transient results in waveform viewer."""
+        """Plot transient results in waveform viewer and feed FFT viewer."""
         waveform = self._viewer_panel.get_waveform_viewer()
+        fft = self._viewer_panel.get_fft_viewer()
         waveform.clear()
+        fft.clear()
         self._signal_list.clear()
 
         if not result.tran_times or not result.tran_values:
@@ -1032,8 +1057,12 @@ C1 out 0 100n
                 waveform.add_signal(name, x_data, values)
                 color = waveform._signals[name].color if name in waveform._signals else "#1f77b4"
                 self._signal_list.add_signal(name, color)
+                # Feed time-domain data to FFT viewer
+                fft.set_time_data(name, x_data, values, color)
 
         waveform.auto_scale()
+        # Compute FFT for all signals
+        fft.compute_all()
         self._viewer_panel.show_waveform_tab()
         self._signal_dock.raise_()
 

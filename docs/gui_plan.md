@@ -498,7 +498,7 @@ HIGHLIGHT_RULES = [
 
 **Optional Enhancements:**
 - [ ] Measurement cursors with delta display
-- [ ] FFT of transient waveforms
+- [x] FFT of transient waveforms
 - [ ] Parameter sweep automation
 - [ ] Netlist error underlining (from sim-api response)
 - [ ] Session save/restore

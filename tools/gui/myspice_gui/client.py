@@ -63,6 +63,36 @@ class RunResult:
     ac_frequencies: List[float] = field(default_factory=list)
     ac_solutions: List[List[List[float]]] = field(default_factory=list)  # [freq][node][mag, phase]
 
+    @property
+    def dc_values(self) -> Dict[str, List[float]]:
+        """DC sweep solutions as {node_name: [value_per_sweep_point]}."""
+        if not self.sweep_solutions or not self.nodes:
+            return {}
+        result = {}
+        for i, node in enumerate(self.nodes):
+            result[node] = [sol[i] for sol in self.sweep_solutions if i < len(sol)]
+        return result
+
+    @property
+    def tran_values(self) -> Dict[str, List[float]]:
+        """Transient solutions as {node_name: [value_per_time_point]}."""
+        if not self.tran_solutions or not self.nodes:
+            return {}
+        result = {}
+        for i, node in enumerate(self.nodes):
+            result[node] = [sol[i] for sol in self.tran_solutions if i < len(sol)]
+        return result
+
+    @property
+    def ac_values(self) -> Dict[str, List]:
+        """AC solutions as {node_name: [[mag, phase] per frequency]}."""
+        if not self.ac_solutions or not self.nodes:
+            return {}
+        result = {}
+        for i, node in enumerate(self.nodes):
+            result[node] = [sol[i] for sol in self.ac_solutions if i < len(sol)]
+        return result
+
     @classmethod
     def from_dict(cls, data: dict) -> "RunResult":
         """Create RunResult from API response dictionary."""
